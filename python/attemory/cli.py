@@ -13,6 +13,13 @@ from .models import MemoryInput, to_jsonable
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "code":
+        from .code.cli import main as code_main
+
+        return code_main(argv[1:], prog="attemory code")
+
     parser = build_parser()
     args = parser.parse_args(argv)
     client = AttemoryClient(

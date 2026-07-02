@@ -1,258 +1,85 @@
 from __future__ import annotations
 
 import argparse
-import atexit
-import json
 import os
-import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
-from .client import AttemoryClient
-from .exceptions import AttemoryError, AttemoryHTTPError
-from .models import MemoryInput, to_jsonable
+from .code import cli as code_cli
+from .exceptions import AttemoryHTTPError
 
 
-DEFAULT_HEALTH_TIMEOUT_SECONDS = 30.0
-DEFAULT_MCP_SYSTEM_PROMPT = (
-    "Read the following memories carefully and find the most relevant memory "
-    "to the query at the end."
+CODE_MCP_INSTRUCTIONS = (
+    "Use Attemory for read-only natural-language semantic code search in repositories already indexed with "
+    "`attemory code` or its short alias `atcode`. This is not keyword search. Call `search` for any "
+    "repository understanding or code-location question, including features, behavior, architecture, "
+    "implementation, entry points, definitions, call sites, configuration, tests, error paths, and "
+    "cross-file flows. Detailed queries work best: include relevant symbols, behaviors, files, errors, "
+    "or user-facing effects when available. This MCP server only exposes repository search; repository "
+    "setup and indexing are user-managed. If search reports a missing or incomplete index, tell the user "
+    "to run `atcode init`, `atcode index`, or `atcode index --resume`. After search, read the returned "
+    "file ranges before answering or editing."
 )
 
 
-class ManagedAttemoryServer:
-    def __init__(
-        self,
-        *,
-        binary: str,
-        config: str | None,
-        host: str,
-        port: int,
-        extra_args: list[str],
-        log_file: str | None,
-        timeout: float,
-    ) -> None:
-        self.binary = str(Path(binary).expanduser())
-        self.config = str(Path(config).expanduser()) if config else None
-        self.host = host
-        self.port = port
-        self.extra_args = extra_args
-        self.log_file = str(Path(log_file).expanduser()) if log_file else None
-        self.timeout = timeout
-        self._process: subprocess.Popen[bytes] | None = None
-        self._log_handle: Any | None = None
-
-    def start(self) -> None:
-        if self._process is not None:
-            return
-
-        command = [self.binary]
-        if self.config:
-            command.extend(["--config", self.config])
-        command.extend(["--host", self.host, "--port", str(self.port)])
-        command.extend(self.extra_args)
-
-        stderr: Any = subprocess.DEVNULL
-        if self.log_file:
-            self._log_handle = open(self.log_file, "ab")
-            stderr = self._log_handle
-
-        self._process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=stderr,
-        )
-        atexit.register(self.stop)
-
-        client = AttemoryClient(host=self.host, port=self.port, timeout=2.0)
-        deadline = time.monotonic() + self.timeout
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            if self._process.poll() is not None:
-                raise RuntimeError(f"attemory server exited with code {self._process.returncode}")
-            try:
-                if client.health():
-                    return
-            except Exception as exc:  # noqa: BLE001 - health polling reports the last failure.
-                last_error = exc
-            time.sleep(0.25)
-
-        self.stop()
-        if last_error is not None:
-            raise RuntimeError(f"attemory server did not become healthy: {last_error}") from last_error
-        raise RuntimeError("attemory server did not become healthy")
-
-    def stop(self) -> None:
-        process = self._process
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5.0)
-        self._process = None
-
-        if self._log_handle is not None:
-            self._log_handle.close()
-            self._log_handle = None
-
-
-class AttemoryMCPService:
-    def __init__(
-        self,
-        *,
-        client: AttemoryClient,
-        system_prompt: str | None,
-        auto_create_sessions: bool,
-        auto_index: bool,
-        auto_save: bool,
-        search_waits_for_index: bool,
-    ) -> None:
-        self.client = client
-        self.system_prompt = system_prompt
-        self.auto_create_sessions = auto_create_sessions
-        self.auto_index = auto_index
-        self.auto_save = auto_save
-        self.search_waits_for_index = search_waits_for_index
+class AttemoryCodeMCPService:
+    def __init__(self, *, default_repo_root: str | None = None) -> None:
+        self.default_repo_root = str(Path(default_repo_root).expanduser()) if default_repo_root else None
         self._lock = threading.RLock()
-
-    def health(self) -> dict[str, Any]:
-        with self._lock:
-            if not self.client.health():
-                raise RuntimeError("server health check failed")
-            return {"status": "ok"}
-
-    def list_sessions(self) -> dict[str, Any]:
-        with self._lock:
-            return {"sessions": to_jsonable(self.client.list_sessions())}
-
-    def session_status(self, session_id: str) -> dict[str, Any]:
-        with self._lock:
-            self._ensure_session_loaded(session_id)
-            return self._status_response(session_id)
-
-    def create_session(self, session_id: str, kv_persist: bool = False) -> dict[str, Any]:
-        with self._lock:
-            usage = self.client.create_session(session_id=session_id, kv_persist=kv_persist)
-            system_usage = None
-            if self.system_prompt:
-                system_usage = self.client.add_system(self.system_prompt, session_id=session_id)
-            return {
-                "session_id": session_id,
-                "usage": to_jsonable(usage),
-                "system_usage": to_jsonable(system_usage) if system_usage is not None else None,
-                "status": self._status_response(session_id).get("status"),
-            }
-
-    def add_memory(self, session_id: str, text: str, id: str | None = None) -> dict[str, Any]:
-        with self._lock:
-            self._ensure_session_loaded(session_id)
-            usage = self.client.add_memory(text, session_id=session_id, id=id)
-
-            response: dict[str, Any] = {
-                "session_id": session_id,
-                "usage": to_jsonable(usage),
-                "index": None,
-                "save": None,
-            }
-            if self.auto_index:
-                response["index"] = self.client.index_session(session_id=session_id)
-            if self.auto_save:
-                response["save"] = self.client.save_session(session_id=session_id)
-            response["status"] = self._status_response(session_id).get("status")
-            return response
-
-    def save_session(self, session_id: str) -> dict[str, Any]:
-        with self._lock:
-            self._ensure_session_loaded(session_id)
-            response: dict[str, Any] = {"session_id": session_id, "index": None}
-            if self.auto_index:
-                response["index"] = self.client.index_session(session_id=session_id)
-            response["save"] = self.client.save_session(session_id=session_id)
-            response["status"] = self._status_response(session_id).get("status")
-            return response
 
     def search(
         self,
-        session_id: str,
         query: str,
         *,
+        repo_root: str | None,
         query_context: str | None,
-        top_k: int | None,
+        display_top_k: int | None,
+        candidate_chunk_top_k: int | None,
+        include_snippets: bool,
     ) -> dict[str, Any]:
         with self._lock:
-            self._ensure_session_loaded(session_id)
-            index_result = None
-            if self.auto_index and self.search_waits_for_index:
-                status = self._status(session_id)
-                if status is not None and not status.indexed:
-                    index_result = self.client.index_session(session_id=session_id)
-                    if self.auto_save:
-                        self.client.save_session(session_id=session_id)
-            results = self.client.search(
+            root = self._resolve_project_root(repo_root)
+            config = code_cli.load_config(root)
+            records = code_cli.require_chunks(root)
+            search_result = code_cli.retrieve_hits(
+                root,
+                config,
                 query,
-                session_id=session_id,
-                query_context=query_context,
-                top_k=top_k,
+                records,
+                display_top_k=display_top_k or config.display_top_k,
+                candidate_chunk_top_k=candidate_chunk_top_k or config.candidate_chunk_top_k,
+                user_query_context=query_context,
             )
+            fused = search_result["hits"]
             return {
-                "session_id": session_id,
-                "index": index_result,
-                "results": to_jsonable(results),
+                "repo_root": str(root),
+                "session_id": config.session_id,
+                "context": render_code_context(root, fused, include_snippets),
+                "results": [code_cli.fused_to_json(root, item, include_snippets) for item in fused],
+                "raw_result_count": search_result["raw_result_count"],
+                "raw_segment_count": search_result["raw_segment_count"],
+                "oneshot_passes": search_result["oneshot_passes"],
             }
 
-    def oneshot_search(
-        self,
-        query: str,
-        memories: list[dict[str, Any]],
-        *,
-        query_context: str | None,
-        top_k: int | None,
-    ) -> dict[str, Any]:
-        normalized = [MemoryInput.from_value(memory, index) for index, memory in enumerate(memories)]
-        with self._lock:
-            results = self.client.oneshot_search(
-                query,
-                normalized,
-                system=self.system_prompt or DEFAULT_MCP_SYSTEM_PROMPT,
-                query_context=query_context,
-                top_k=top_k,
+    def _resolve_project_root(self, repo_root: str | None) -> Path:
+        requested = repo_root or self.default_repo_root
+        start = Path(requested).expanduser().resolve() if requested else Path.cwd().resolve()
+        root = code_cli.find_project_root(start)
+        if root is None:
+            raise code_cli.CodeCliError(
+                f"no Attemory code project found from {start}; run `atcode init` and `atcode index`"
             )
-        return {"results": to_jsonable(results)}
-
-    def _ensure_session_loaded(self, session_id: str) -> None:
-        try:
-            self.client.restore_session(session_id=session_id)
-            return
-        except AttemoryError:
-            if not self.auto_create_sessions:
-                raise
-
-        self.client.create_session(session_id=session_id)
-        if self.system_prompt:
-            self.client.add_system(self.system_prompt, session_id=session_id)
-
-    def _status_response(self, session_id: str) -> dict[str, Any]:
-        status = self._status(session_id)
-        if status is None:
-            raise RuntimeError("session is not loaded")
-        return {"session_id": session_id, "status": to_jsonable(status)}
-
-    def _status(self, session_id: str) -> Any | None:
-        for status in self.client.list_sessions():
-            if status.session_id == session_id:
-                return status
-        return None
+        return root
 
 
-def build_mcp_app(service: AttemoryMCPService) -> Any:
+def build_mcp_app(
+    code_service: AttemoryCodeMCPService,
+) -> Any:
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.types import ToolAnnotations
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "MCP support requires the optional dependency: "
@@ -261,84 +88,39 @@ def build_mcp_app(service: AttemoryMCPService) -> Any:
 
     mcp = FastMCP(
         "attemory",
-        instructions=(
-            "Use attemory for long-term memory search. Tools intentionally expose "
-            "semantic session and search operations only; restore, system prompts, "
-            "indexing, and saving are handled internally by this MCP server."
-        ),
+        instructions=CODE_MCP_INSTRUCTIONS,
+    )
+    read_only_annotations = ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
     )
 
-    @mcp.tool()
-    def attemory_health() -> dict[str, Any]:
-        """Check whether the underlying attemory HTTP server is reachable."""
-        return _run_tool(service.health)
-
-    @mcp.tool()
-    def attemory_list_sessions() -> dict[str, Any]:
-        """List sessions currently loaded by the attemory server."""
-        return _run_tool(service.list_sessions)
-
-    @mcp.tool()
-    def attemory_session_status(session_id: str) -> dict[str, Any]:
-        """Return visible status for a session; loads the session internally if needed."""
-        return _run_tool(service.session_status, session_id)
-
-    @mcp.tool()
-    def attemory_create_session(session_id: str, kv_persist: bool = False) -> dict[str, Any]:
-        """Create a memory session. The MCP server applies its configured system prompt internally."""
-        return _run_tool(service.create_session, session_id, kv_persist)
-
-    @mcp.tool()
-    def attemory_add_memory(session_id: str, text: str, id: str | None = None) -> dict[str, Any]:
-        """Add memory text to a session with an optional opaque client id."""
-        return _run_tool(service.add_memory, session_id, text, id)
-
-    @mcp.tool()
-    def attemory_search(
-        session_id: str,
+    @mcp.tool(name="search", annotations=read_only_annotations)
+    def search(
         query: str,
+        repo_root: str | None = None,
         query_context: str | None = None,
-        top_k: int | None = 20,
+        display_top_k: int | None = None,
+        candidate_chunk_top_k: int | None = None,
+        include_snippets: bool = False,
     ) -> dict[str, Any]:
-        """Search a session by id. query_context is prefetched but excluded from direct attention scoring."""
+        """Search an indexed repository and return semantic file/range context for coding agents.
+
+        repo_root may be the repository root or any path inside the repository. If it
+        is omitted, the MCP server falls back to --repo-root, ATTEMORY_CODE_REPO_ROOT,
+        and finally the MCP process working directory.
+        """
         return _run_tool(
-            service.search,
-            session_id,
+            code_service.search,
             query,
+            repo_root=repo_root,
             query_context=query_context,
-            top_k=top_k,
+            display_top_k=display_top_k,
+            candidate_chunk_top_k=candidate_chunk_top_k,
+            include_snippets=include_snippets,
         )
-
-    @mcp.tool()
-    def attemory_oneshot_search(
-        query: str,
-        memories: list[dict[str, Any]],
-        query_context: str | None = None,
-        top_k: int | None = 20,
-    ) -> dict[str, Any]:
-        """Run one-shot search. query_context is prefetched but excluded from direct attention scoring."""
-        return _run_tool(
-            service.oneshot_search,
-            query,
-            memories,
-            query_context=query_context,
-            top_k=top_k,
-        )
-
-    @mcp.tool()
-    def attemory_save_session(session_id: str) -> dict[str, Any]:
-        """Persist a session according to the MCP server policy."""
-        return _run_tool(service.save_session, session_id)
-
-    @mcp.resource("attemory://sessions")
-    def attemory_sessions_resource() -> str:
-        """Loaded attemory sessions."""
-        return json.dumps(_run_tool(service.list_sessions), ensure_ascii=False)
-
-    @mcp.resource("attemory://sessions/{session_id}/status")
-    def attemory_session_status_resource(session_id: str) -> str:
-        """Status for one attemory session."""
-        return json.dumps(_run_tool(service.session_status, session_id), ensure_ascii=False)
 
     return mcp
 
@@ -363,6 +145,9 @@ def _error_payload(exc: BaseException) -> dict[str, Any]:
         details["status_code"] = exc.status_code
         if exc.details is not None:
             details["server"] = exc.details
+    elif isinstance(exc, code_cli.CodeCliError):
+        code, suggestions = _code_cli_error_details(message)
+        details.update(suggestions)
     elif isinstance(exc, (ValueError, TypeError)):
         code = "INVALID_REQUEST"
     elif isinstance(exc, RuntimeError):
@@ -375,88 +160,115 @@ def _error_payload(exc: BaseException) -> dict[str, Any]:
     }
 
 
+def _code_cli_error_details(message: str) -> tuple[str, dict[str, Any]]:
+    lower = message.lower()
+    details: dict[str, Any] = {"recoverable": True}
+
+    if "not in an attemory code project" in lower or "no attemory code project found" in lower:
+        return (
+            "REPO_NOT_INITIALIZED",
+            details
+            | {
+                "suggested_action": "Run atcode init and atcode index in the target repository.",
+                "suggested_commands": ["atcode init", "atcode index"],
+            },
+        )
+
+    if "no attemory code index found" in lower or "session is not indexed" in lower:
+        return (
+            "REPO_NOT_INDEXED",
+            details
+            | {
+                "suggested_action": (
+                    "Run atcode index in the target repository. If indexing was interrupted "
+                    "after memories were added, run atcode index --resume."
+                ),
+                "suggested_commands": ["atcode index", "atcode index --resume"],
+            },
+        )
+
+    if "cannot reach attemory server" in lower or "is not healthy" in lower:
+        return (
+            "ATTEMORY_SERVER_UNAVAILABLE",
+            details
+            | {
+                "suggested_action": "Start attemory-server with the port configured for this repository.",
+                "suggested_commands": ["attemory-server --small --backend gpu --port 9006"],
+            },
+        )
+
+    if "session is not loaded" in lower:
+        return (
+            "SESSION_NOT_LOADED",
+            details
+            | {
+                "suggested_action": "Restore or rebuild the repository index with atcode index.",
+                "suggested_commands": ["atcode index", "atcode index --resume"],
+            },
+        )
+
+    return (
+        "CODE_PROJECT_ERROR",
+        details
+        | {
+            "suggested_action": "Check the repository setup with atcode status or atcode doctor.",
+            "suggested_commands": ["atcode status", "atcode doctor"],
+        },
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    manager: ManagedAttemoryServer | None = None
-    if args.manage_server:
-        manager = ManagedAttemoryServer(
-            binary=args.attemory_bin,
-            config=args.config,
-            host=args.host,
-            port=args.port,
-            extra_args=args.server_arg,
-            log_file=args.server_log,
-            timeout=args.health_timeout,
-        )
-        try:
-            manager.start()
-        except Exception as exc:  # noqa: BLE001 - startup failures must be surfaced before MCP starts.
-            print(f"attemory-mcp: error: {exc}", file=sys.stderr)
-            return 1
-
-    client = AttemoryClient(
-        host=args.host,
-        port=args.port,
-        timeout=args.timeout,
-    )
-    service = AttemoryMCPService(
-        client=client,
-        system_prompt=_read_system_prompt(args),
-        auto_create_sessions=args.auto_create_sessions,
-        auto_index=not args.no_auto_index,
-        auto_save=not args.no_auto_save,
-        search_waits_for_index=not args.no_search_waits_for_index,
-    )
+    code_service = AttemoryCodeMCPService(default_repo_root=args.repo_root)
 
     try:
-        app = build_mcp_app(service)
+        app = build_mcp_app(code_service)
         app.run(transport=args.transport)
     except Exception as exc:  # noqa: BLE001
         print(f"attemory-mcp: error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        if manager is not None:
-            manager.stop()
     return 0
+
+
+def render_code_context(root: Path, fused: list[dict[str, Any]], include_snippets: bool) -> str:
+    lines = [
+        "<semantic_search_results>",
+        "The following files and line ranges are semantic-search candidate evidence from the repository.",
+        "",
+    ]
+    for item in fused:
+        ranges = code_cli.format_ranges(item["ranges"])
+        lines.append(f"{item['rank']}. {item['path']}:{ranges}")
+        if include_snippets:
+            for range_item in item["ranges"]:
+                snippet = code_cli.read_snippet(
+                    root,
+                    code_cli.ChunkRecord(
+                        "",
+                        item["path"],
+                        range_item["start_line"],
+                        range_item["end_line"],
+                        item["language"],
+                        "",
+                    ),
+                )
+                if snippet:
+                    lines.extend(["```", snippet, "```"])
+    lines.append("</semantic_search_results>")
+    return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="attemory-mcp", description="MCP adapter for attemory")
-    parser.add_argument("--host", default=os.environ.get("ATTEMORY_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("ATTEMORY_PORT", "9006")))
-    parser.add_argument("--timeout", type=float, default=float(os.environ.get("ATTEMORY_TIMEOUT", "3600")))
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
         default=os.environ.get("ATTEMORY_MCP_TRANSPORT", "stdio"),
     )
-    parser.add_argument("--system-prompt", default=os.environ.get("ATTEMORY_MCP_SYSTEM_PROMPT"))
-    parser.add_argument("--system-prompt-file", default=os.environ.get("ATTEMORY_MCP_SYSTEM_PROMPT_FILE"))
-    parser.add_argument("--no-system-prompt", action="store_true")
-    parser.add_argument("--auto-create-sessions", action="store_true")
-    parser.add_argument("--no-auto-index", action="store_true")
-    parser.add_argument("--no-auto-save", action="store_true")
-    parser.add_argument("--no-search-waits-for-index", action="store_true")
-
-    parser.add_argument("--manage-server", action="store_true")
-    parser.add_argument("--attemory-bin", default=os.environ.get("ATTEMORY_BIN", "attemory-server"))
-    parser.add_argument("--config", default=os.environ.get("ATTEMORY_SERVER_CONFIG"))
-    parser.add_argument("--server-log", default=os.environ.get("ATTEMORY_SERVER_LOG"))
-    parser.add_argument("--server-arg", action="append", default=[])
-    parser.add_argument("--health-timeout", type=float, default=DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    parser.add_argument("--repo-root", default=os.environ.get("ATTEMORY_CODE_REPO_ROOT"))
     return parser
-
-
-def _read_system_prompt(args: argparse.Namespace) -> str | None:
-    if args.no_system_prompt:
-        return None
-    if args.system_prompt_file:
-        return Path(args.system_prompt_file).expanduser().read_text(encoding="utf-8")
-    if args.system_prompt is not None:
-        return args.system_prompt
-    return DEFAULT_MCP_SYSTEM_PROMPT
 
 
 if __name__ == "__main__":

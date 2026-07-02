@@ -65,6 +65,7 @@ macos-metal = ["attemory-runtime-macos-metal==0.1.1; platform_system == 'Darwin'
 
 [project.scripts]
 attemory = "attemory.cli:main"
+atcode = "attemory.code.cli:main"
 attemory-mcp = "attemory.mcp:main"
 attemory-server = "attemory.server:main"
 
