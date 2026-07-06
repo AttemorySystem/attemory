@@ -1,11 +1,9 @@
-<p align="center">
+<h1 align="center">
   <img src="assets/attemory_logo.png" alt="Attemory" width="320">
-</p>
-
-<hr>
+</h1>
 
 <p align="center">
-  <sub><b>Attention-native retrieval for AI agents.</b></sub>
+  <strong>Attention-native retrieval for AI agents.</strong>
 </p>
 
 Attemory is an attention-native semantic retrieval engine for long memory,
@@ -18,23 +16,21 @@ similarity, BM25, or a vector database as the core retriever.
 
 ## Why Attemory
 
-- **Attention-based retrieval path:** search runs through model attention over
+- **Search with reasoning:** search runs through model attention over
   indexed memory. The query is evaluated against model-readable memory through
   the same attention mechanism LLMs use to reason over context, rather than
   only vector distance over compressed embeddings.
 - **SOTA-class retrieval quality:** Attemory reaches
   [SOTA-class results on public benchmarks](benchmarks/) across LongMemEval,
-  LoCoMo, and Semble without benchmark-specific retrieval hacks.
+  LoCoMo, and semble without benchmark-specific retrieval hacks.
 - **Lower coding-agent token use:** on [SWE-QA](benchmarks/sweqa.md), an
   end-to-end repository question-answering benchmark, one Attemory code-search
   hint reduced Claude Code model tokens by **43.8%** with near-tied judge
   quality across **15 repositories and 720 questions**.
 
-Attemory is benchmark-backed software, not a marketing claim. Reproducible
-benchmark notes, adapter patches, run commands, and result summaries are all
-available in [benchmarks/](benchmarks/), including
-[LongMemEval](benchmarks/LongMemEval.md), [LoCoMo](benchmarks/LoCoMo.md),
-[Semble](benchmarks/semble.md), and [SWE-QA](benchmarks/sweqa.md).
+Attemory's retrieval ability is evaluated through reproducible benchmarks, not
+left as a marketing claim. Benchmark scripts, notes, run commands, and result
+summaries are all available in [benchmarks/](benchmarks/).
 
 Attemory can be used at two levels. See [Documentation](#documentation) for the
 full guides:
@@ -42,7 +38,7 @@ full guides:
 | Layer | Use it for | Interface |
 | --- | --- | --- |
 | [**Retrieval engine**](#retrieval-engine-api) | long memory, documents, custom apps, benchmark adapters | Python API / HTTP API |
-| [**Repository search**](#repository-search) | index a codebase once, return files and line ranges for agents | `atcode`, Claude Code plugin |
+| [**Repository search**](#repository-search) | index a codebase once, return files and line ranges for agents | `attemory code` (`atcode`), Claude Code plugin |
 
 ## How It Works
 
@@ -103,7 +99,7 @@ full per-repo breakdown, methodology, and reproduction commands.
 Token savings only matter if recall stays high. Attemory reaches SOTA-class
 results across long conversations, million-token memory, and multi-language
 codebases. LongMemEval-M is especially important: its context is long enough
-that few memory systems evaluate on it directly, while Attemory still retrieves
+that **few memory systems evaluate on it**, while Attemory still retrieves
 all labeled evidence messages in the top 50 for **92.55%** of answerable
 queries.
 
