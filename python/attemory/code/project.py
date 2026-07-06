@@ -284,7 +284,7 @@ class CodeChunk:
 
     @property
     def memory_text(self) -> str:
-        return f"// {self.file}:{self.lines}\n{self.text}"
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -502,7 +502,7 @@ def iter_source_paths(root: Path, config: CodeConfig) -> Iterator[Path]:
             rel = _rel(path, root)
             if _matches_any(rel, config.exclude_patterns):
                 continue
-            if _is_code_file(path) and _matches_any(rel, config.include_patterns):
+            if _matches_any(rel, config.include_patterns):
                 paths.append(path)
     yield from sorted(paths, key=lambda item: item.relative_to(root).as_posix())
 
@@ -746,10 +746,6 @@ def _matches_any(rel_path: str, patterns: Iterable[str]) -> bool:
             if rel == prefix or rel.startswith(prefix + "/"):
                 return True
     return False
-
-
-def _is_code_file(path: Path) -> bool:
-    return path.name in SPECIAL_CODE_FILENAMES or path.suffix.lower() in DEFAULT_CODE_SUFFIXES
 
 
 def _slug(value: str) -> str:

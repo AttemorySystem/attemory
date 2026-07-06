@@ -120,8 +120,7 @@ def build_parser(*, prog: str = "atcode") -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="diagnose repo code search setup")
     doctor.set_defaults(handler=cmd_doctor)
 
-    reset = subparsers.add_parser("reset", help="remove local metadata and optionally the session")
-    reset.add_argument("--session", action="store_true", help="delete the configured Attemory session")
+    reset = subparsers.add_parser("reset", help="remove local metadata and the configured Attemory session")
     reset.add_argument("--all", action="store_true", help="also remove config and .gitignore entry")
     reset.add_argument("-f", "--force", action="store_true")
     reset.set_defaults(handler=cmd_reset)
@@ -339,8 +338,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
     if args.all:
         targets.append(config_path(root))
     existing = [path for path in targets if path.exists()]
-    if args.session:
-        existing.append(Path(f"session:{config.session_id}"))
+    existing.append(Path(f"session:{config.session_id}"))
     if not existing:
         print("nothing to reset")
         return 0
@@ -351,14 +349,13 @@ def cmd_reset(args: argparse.Namespace) -> int:
         if not confirm("proceed?"):
             print("aborted")
             return 1
-    if args.session:
-        client = client_for(config)
-        require_server(client, config)
-        try:
-            client.delete_session(config.session_id)
-        except AttemoryHTTPError as exc:
-            if exc.status_code != 404:
-                raise
+    client = client_for(config)
+    require_server(client, config)
+    try:
+        client.delete_session(config.session_id)
+    except AttemoryHTTPError as exc:
+        if exc.status_code != 404:
+            raise
     for path in targets:
         path.unlink(missing_ok=True)
     if args.all:

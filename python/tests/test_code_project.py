@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from attemory.code.project import (
     chunks_path,
     config_path,
     default_config,
+    index_path,
     iter_indexed_files,
     load_config,
     split_code,
@@ -64,7 +66,7 @@ def test_split_code_matches_benchmark_forward_blank_split() -> None:
     chunks = split_code("x.py", text, "python", chunk_lines=4, blank_line_window=2)
 
     assert [(chunk.start_line, chunk.end_line) for chunk in chunks] == [(1, 5), (6, 6)]
-    assert chunks[0].memory_text.startswith("// x.py:1-5\n")
+    assert chunks[0].memory_text == "a\nb\nc\nd\n\n"
     assert chunks[0].id.endswith(":x.py:1-5")
 
 
@@ -80,6 +82,20 @@ def test_iter_indexed_files_applies_include_and_exclude(tmp_path: Path) -> None:
 
     assert [item.rel_path for item in files] == ["src/keep.py"]
     assert files[0].chunks[0].text == "print('x')\n"
+
+
+def test_custom_include_pattern_can_index_non_default_suffix(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_text("{\"event\":\"start\"}\n", encoding="utf-8")
+    (tmp_path / "ignored.data").write_text("not included\n", encoding="utf-8")
+    config = default_config(tmp_path, "demo")
+
+    assert [item.rel_path for item in iter_indexed_files(tmp_path, config)] == []
+
+    config = replace(config, include_patterns=[*config.include_patterns, "**/*.jsonl"])
+
+    indexed = {item.rel_path: item.language for item in iter_indexed_files(tmp_path, config)}
+
+    assert indexed == {"events.jsonl": "text"}
 
 
 def test_default_index_includes_common_repo_files_without_all_json(tmp_path: Path) -> None:
@@ -351,6 +367,64 @@ def test_search_raw_keeps_ranked_chunk_output(
     assert "File: a.py:1-1 [python]" in out
     assert "print('a')" in out
     assert "<semantic_search_results>" not in out
+
+
+def test_reset_deletes_local_metadata_and_configured_session(tmp_path: Path, monkeypatch: Any) -> None:
+    write_single_chunk_index(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def health(self) -> bool:
+            self.calls.append("health")
+            return True
+
+        def delete_session(self, session_id: str) -> dict[str, str]:
+            self.calls.append(f"delete:{session_id}")
+            return {}
+
+    fake = FakeClient()
+    monkeypatch.setattr(code_cli, "client_for", lambda _: fake)
+
+    code = code_cli.main(["reset", "-f"])
+
+    assert code == 0
+    assert fake.calls == ["health", "delete:demo"]
+    assert not index_path(tmp_path).exists()
+    assert not chunks_path(tmp_path).exists()
+    assert config_path(tmp_path).exists()
+
+
+def test_reset_all_deletes_config_gitignore_and_configured_session(tmp_path: Path, monkeypatch: Any) -> None:
+    (tmp_path / ".git").mkdir()
+    write_single_chunk_index(tmp_path)
+    add_to_gitignore(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def health(self) -> bool:
+            self.calls.append("health")
+            return True
+
+        def delete_session(self, session_id: str) -> dict[str, str]:
+            self.calls.append(f"delete:{session_id}")
+            return {}
+
+    fake = FakeClient()
+    monkeypatch.setattr(code_cli, "client_for", lambda _: fake)
+
+    code = code_cli.main(["reset", "--all", "-f"])
+
+    assert code == 0
+    assert fake.calls == ["health", "delete:demo"]
+    assert not config_path(tmp_path).exists()
+    assert not (tmp_path / ".attemory").exists()
+    assert "/.attemory/" not in (tmp_path / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_index_splits_only_before_new_file(tmp_path: Path) -> None:
