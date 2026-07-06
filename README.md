@@ -1,23 +1,75 @@
 <p align="center">
-  <img src="assets/attemory_logo.png" alt="Attemory" width="320"><br><b>Cut agent token usage with high-recall memory retrieval.</b>
+  <img src="assets/attemory_logo.png" alt="Attemory" width="320">
 </p>
 
-Attemory is a semantic retrieval engine for long memory, documents, and
-codebases. It turns large corpora into model-readable memory and retrieves
-relevant evidence by letting a local model attend over that memory, rather than
-relying only on keyword matching or embedding similarity.
+<hr>
 
-For AI agents, this means large repositories and long histories can be indexed
-once, then searched before the expensive model starts its own exploration.
-Instead of spending tokens on broad grep/read loops, repeated file inspection,
-and exploratory subagents, the agent gets compact evidence to inspect first.
+<p align="center">
+  <sub><b>Attention-native retrieval for AI agents.</b></sub>
+</p>
 
-On [SWE-QA](benchmarks/sweqa.md), adding one Attemory semantic-search hint
-before Claude Code reduced model tokens by **43.8%** while keeping answer
-quality essentially tied: **83.17 vs 83.39** under a GPT-5.4 judge across
-**15 repositories and 720 questions**.
+Attemory is an attention-native semantic retrieval engine for long memory,
+documents, and codebases.
 
-## Agent Token Savings
+It indexes raw corpora into reusable KV state, then retrieves evidence by
+letting a local model attend over that memory. This is a different retrieval
+primitive from nearest-vector lookup: Attemory does not rely on embedding
+similarity, BM25, or a vector database as the core retriever.
+
+## Why Attemory
+
+- **Attention-based retrieval path:** search runs through model attention over
+  indexed memory. The query is evaluated against model-readable memory through
+  the same attention mechanism LLMs use to reason over context, rather than
+  only vector distance over compressed embeddings.
+- **SOTA-class retrieval quality:** Attemory reaches
+  [SOTA-class results on public benchmarks](benchmarks/) across LongMemEval,
+  LoCoMo, and Semble without benchmark-specific retrieval hacks.
+- **Lower coding-agent token use:** on [SWE-QA](benchmarks/sweqa.md), an
+  end-to-end repository question-answering benchmark, one Attemory code-search
+  hint reduced Claude Code model tokens by **43.8%** with near-tied judge
+  quality across **15 repositories and 720 questions**.
+
+Attemory is benchmark-backed software, not a marketing claim. Reproducible
+benchmark notes, adapter patches, run commands, and result summaries are all
+available in [benchmarks/](benchmarks/), including
+[LongMemEval](benchmarks/LongMemEval.md), [LoCoMo](benchmarks/LoCoMo.md),
+[Semble](benchmarks/semble.md), and [SWE-QA](benchmarks/sweqa.md).
+
+Attemory can be used at two levels. See [Documentation](#documentation) for the
+full guides:
+
+| Layer | Use it for | Interface |
+| --- | --- | --- |
+| [**Retrieval engine**](#retrieval-engine-api) | long memory, documents, custom apps, benchmark adapters | Python API / HTTP API |
+| [**Repository search**](#repository-search) | index a codebase once, return files and line ranges for agents | `atcode`, Claude Code plugin |
+
+## How It Works
+
+Attemory runs as a local retrieval service:
+
+1. **Index memory into KV state.** Add raw memories, documents, or code chunks
+   to a session and build reusable searchable state.
+2. **Search by attention.** A local Qwen3.5 retrieval model attends over the
+   indexed memory and the query.
+3. **Return compact evidence.** Applications receive memory ids, text snippets,
+   or file and line ranges that a downstream agent can inspect first.
+
+Large sessions are split into segments internally. Sessions can be configured
+with `kv_persist` so indexing writes segment KV cache state to disk and later
+searches can restore it without rebuilding.
+
+For implementation details, server options, persistence, templates, and API
+behavior, see [doc/usage.md](doc/usage.md).
+
+## Benchmarks
+
+Attemory is evaluated in two ways:
+
+1. **Agent token savings:** can high-recall code search reduce downstream coding-agent exploration?
+2. **Retrieval quality:** can it retrieve the right evidence from long memory and code?
+
+### Agent Token Savings
 
 The SWE-QA comparison keeps the downstream agent the same and changes only the
 initial context:
@@ -46,7 +98,7 @@ but it performs fewer broad search/read loops and launches fewer exploratory
 subagent calls. See [the SWE-QA benchmark note](benchmarks/sweqa.md) for the
 full per-repo breakdown, methodology, and reproduction commands.
 
-## Retrieval Quality
+### Retrieval Quality
 
 Token savings only matter if recall stays high. Attemory reaches SOTA-class
 results across long conversations, million-token memory, and multi-language
@@ -70,22 +122,9 @@ benchmarks.
 All benchmarks are **reproducible in a local environment**. See
 [`benchmarks/`](benchmarks/) for detailed results and run instructions.
 
-## How It Works
+## Getting Started
 
-Attemory runs as a local retrieval service:
-
-1. Index long memory, documents, or code into reusable KV state.
-2. Search that memory with a local retrieval model instead of keyword or vector
-   similarity alone.
-3. Return compact evidence: memory ids, text snippets, or file and line ranges
-   that a downstream agent can inspect first.
-
-The retrieval path uses Qwen3.5 model tiers from `tiny` to `large`, with CUDA
-GPU and Apple Metal acceleration available for local indexing and search. For
-the context template, segment refinement, persistence, and API details, see
-[`doc/usage.md`](doc/usage.md).
-
-## Install
+### Install
 
 Attemory supports Linux and macOS. Hardware acceleration is available on NVIDIA
 CUDA and Apple Metal.
@@ -127,7 +166,7 @@ pip install "attemory[cuda-cu129]" \
 Use `cuda-cu124` or `cuda-cu121` only when your NVIDIA driver is too old for
 CUDA 12.6.
 
-Start a local server, then connect with the Python client:
+Start a local server:
 
 ```bash
 attemory-server --small --backend gpu --port 9006
@@ -135,9 +174,16 @@ attemory-server --small --backend metal --port 9006
 attemory-server --tiny --backend cpu --port 9006
 ```
 
-## Quick Example
+Attemory has two usage levels. Use the API when you are building a retrieval
+engine into your own application. Use Repository Search, through `atcode`, when
+you want a ready-made repository understanding and search tool.
 
-Create a session, add memory, index once, and retrieve compact evidence by id:
+<a id="retrieval-engine-api"></a>
+<details>
+<summary><b>Retrieval Engine API</b></summary>
+
+Use the Python API when you want Attemory as a general retrieval engine for
+memory, documents, or application-specific corpora.
 
 ```bash
 attemory-server --small --backend gpu --port 9006
@@ -170,9 +216,67 @@ for result in results:
     print(result.id, result.text)
 ```
 
-The same API can return chat memories, document snippets, or code chunks. See
-[`examples/weekly_diary.py`](examples/weekly_diary.py) for a complete runnable
-example and [`doc/usage.md`](doc/usage.md) for the full API guide.
+See [examples/weekly_diary.py](examples/weekly_diary.py) for a complete example
+and [doc/usage.md](doc/usage.md) for the full API guide.
+
+</details>
+
+<a id="repository-search"></a>
+<details>
+<summary><b>Repository Search</b></summary>
+
+Use `atcode` when you want to index a repository and ask natural-language code
+questions.
+
+Initialize and index a repository:
+
+```bash
+cd /path/to/repo
+atcode init
+atcode index
+```
+
+Search it:
+
+```bash
+atcode search "where is session restore implemented"
+```
+
+Example output:
+
+```text
+<semantic_search_results>
+The following files and line ranges are semantic-search candidate evidence from the repository.
+
+1. src/context/session/session_manager.cpp:467-528
+2. src/context/kv/segment_kv_cache_commands.cpp:227-326
+</semantic_search_results>
+```
+
+`atcode search` returns compact file and line evidence by default. Add
+`--include-snippets` when you want source snippets in the output, or `--raw`
+when you want the underlying ranked chunk view.
+
+Use it from Claude Code:
+
+```bash
+claude plugin marketplace add AttemorySystem/attemory-claude-code
+claude plugin install attemory-code@attemory
+```
+
+Then ask Claude Code to use `attemory-code search` for repository questions.
+See [Repository Search usage](doc/repository-search.md#mcp-and-agent-usage) for the
+full workflow.
+
+</details>
+
+## Documentation
+
+| Topic | Link |
+| --- | --- |
+| Python and HTTP retrieval API | [doc/usage.md](doc/usage.md) |
+| Repository Search CLI and Claude Code plugin usage | [doc/repository-search.md](doc/repository-search.md) |
+| Benchmarks and reproduction | [benchmarks/](benchmarks/) |
 
 ## Build From Source
 
@@ -229,4 +333,4 @@ If you use Attemory in research or benchmarks, please cite it as:
 
 ## License
 
-Attemory is released under the MIT License. See [`LICENSE`](LICENSE).
+Attemory is released under the MIT License. See [LICENSE](LICENSE).
