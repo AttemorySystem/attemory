@@ -1,0 +1,1319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attemory explorer: attention-based retrieval</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111111;
+      --ink-soft: #444444;
+      --muted: #777777;
+      --line: #d8d8d8;
+      --line-soft: #e9e9e9;
+      --bg: #f6f6f6;
+      --surface: #ffffff;
+      --panel: #eeeeee;
+      --accent: #111111;
+      --accent-soft: #f6f6f6;
+      --accent-line: #111111;
+      --heat: 34, 34, 34;
+      --row-color: 34, 34, 34;
+      --grid-line: rgba(34, 34, 34, 0.13);
+      --grid-rest: rgba(34, 34, 34, 0.04);
+      --shadow: 0 14px 34px rgba(34, 34, 34, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      overflow: hidden;
+    }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: var(--bg);
+    }
+
+    .app-header {
+      min-width: 0;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand-block {
+      min-width: 0;
+    }
+
+    .brand-title {
+      margin: 0;
+      color: var(--ink);
+      font-size: 20px;
+      line-height: 1.15;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .brand-subtitle {
+      margin: 5px 0 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    .header-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .header-links a {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 12px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    .header-links a:hover {
+      border-color: #aaaaaa;
+      background: #f6f6f6;
+    }
+
+    .shell {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+
+    aside {
+      min-width: 0;
+      padding: 18px 14px;
+      border-right: 1px solid var(--line);
+      background: #f6f6f6;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.2;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .nav-tree {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .tree-group {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tree-root {
+      width: 100%;
+      min-height: 30px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 0 4px;
+      text-align: left;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .tree-root.active {
+      color: var(--ink);
+    }
+
+    .tree-children {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .tree-button {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--ink);
+      padding: 7px 9px;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    .tree-button:hover {
+      background: rgba(255, 255, 255, 0.82);
+      border-color: var(--line-soft);
+    }
+
+    .tree-button.active {
+      background: var(--surface);
+      font-weight: 800;
+      border-color: #aaaaaa;
+      box-shadow: 0 8px 22px rgba(34, 34, 34, 0.06);
+    }
+
+    .dataset-select,
+    .query-select {
+      display: none;
+      width: 100%;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 10px;
+      font: inherit;
+    }
+
+    .query-title {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .query-preview {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .query-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 14px;
+      box-shadow: 0 10px 28px rgba(34, 34, 34, 0.06);
+    }
+
+    .field {
+      margin: 0 0 12px;
+    }
+
+    .field:last-child {
+      margin-bottom: 0;
+    }
+
+    .label {
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .value {
+      margin: 0;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .value.empty {
+      color: var(--muted);
+    }
+
+    .field-query .value {
+      font-weight: 800;
+    }
+
+    main {
+      min-width: 0;
+      min-height: 0;
+      padding: 20px 24px 26px;
+      background: linear-gradient(180deg, #fbfbfb 0%, #ffffff 42%);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow: auto;
+      align-items: flex-start;
+    }
+
+    .topline {
+      width: min(100%, 1200px);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .topline h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      color: var(--ink);
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 190px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .legend-bar {
+      width: 110px;
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(
+        90deg,
+        rgba(34, 34, 34, 0.08),
+        rgba(34, 34, 34, 0.22),
+        rgba(34, 34, 34, 0.38),
+        rgba(34, 34, 34, 0.62)
+      );
+      border: 1px solid var(--line-soft);
+    }
+
+    .view-stack {
+      width: min(100%, 1200px);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .view-stack.compare {
+      width: min(100%, 1132px);
+      overflow-x: auto;
+    }
+
+    .view-stack.diary:not(.compare) {
+      width: min(100%, 960px);
+    }
+
+    main.compare-mode .topline {
+      width: min(100%, 1132px);
+    }
+
+    main.diary-mode:not(.compare-mode) .topline {
+      width: min(100%, 960px);
+    }
+
+    .comparison-grid {
+      width: max-content;
+      display: grid;
+      grid-template-columns: repeat(2, 560px);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .comparison-grid .insight-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .comparison-grid .evidence-panel {
+      display: none;
+    }
+
+    .scenario-note {
+      width: 100%;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .view-panel {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .view-panel > .query-card,
+    .view-panel > .memory-board {
+      width: 100%;
+    }
+
+    .table-panel {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .table-panel > .query-card {
+      width: 100%;
+    }
+
+    .answer-line {
+      margin: 0;
+      padding: 9px 11px;
+      border: 1px solid rgba(34, 34, 34, 0.22);
+      border-left: 4px solid var(--accent-line);
+      border-radius: 7px;
+      background: rgba(34, 34, 34, 0.045);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .answer-label {
+      font-weight: 800;
+    }
+
+    .answer-note {
+      color: var(--ink-soft);
+    }
+
+    .memory-board {
+      width: 100%;
+      min-width: 0;
+      align-self: start;
+      max-height: min(62vh, 620px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      background-color: #fbfbfb;
+      background-image:
+        linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+      background-size: 19px 19px;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    main.diary-mode .memory-board {
+      max-height: none;
+      overflow: visible;
+    }
+
+    .insight-layout {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .visual-column {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .evidence-panel {
+      min-width: 0;
+      position: sticky;
+      top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 14px;
+      box-shadow: 0 10px 28px rgba(34, 34, 34, 0.06);
+    }
+
+    .evidence-panel h3 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.25;
+      font-weight: 900;
+    }
+
+    .evidence-help {
+      margin: 5px 0 11px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .evidence-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .evidence-item {
+      min-width: 0;
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      background: #ffffff;
+      padding: 9px;
+    }
+
+    .evidence-item.expected {
+      border-color: rgba(34, 34, 34, 0.38);
+      background: rgba(34, 34, 34, 0.045);
+    }
+
+    .evidence-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .rank-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 46px;
+      min-height: 22px;
+      border-radius: 999px;
+      background: var(--ink);
+      color: #fff;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .expected-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      background: #dcfce7;
+      color: #166534;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .evidence-text {
+      margin: 0;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .memory-text {
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      padding: 0 8px;
+      color: var(--ink);
+      font: 13px/19px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      letter-spacing: 0;
+      white-space: normal;
+    }
+
+    .memory-line {
+      min-height: 19px;
+      padding: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .memory-line.table-line,
+    .memory-line.heading-line {
+      white-space: nowrap;
+    }
+
+    .memory-span {
+      display: inline;
+      background: rgba(var(--row-color), var(--heat-alpha, 0.035));
+      border-radius: 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .memory-span.rank-1 {
+      background: rgba(var(--row-color), 0.34);
+    }
+
+    .memory-span.focused,
+    .evidence-item.focused {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .status {
+      width: min(100%, 980px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink-soft);
+      padding: 12px 14px;
+      font-size: 13px;
+    }
+
+    .status.error {
+      border-color: #aaaaaa;
+      background: #f6f6f6;
+      color: #111111;
+    }
+
+    @media (max-width: 940px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        height: auto;
+        min-height: 100vh;
+        grid-template-rows: auto auto;
+        align-content: start;
+      }
+
+      .app-header {
+        padding: 15px;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .header-links {
+        width: 100%;
+        overflow-x: auto;
+      }
+
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav-tree { display: none; }
+
+      .dataset-select,
+      .query-select { display: block; }
+
+      main {
+        height: auto;
+        overflow: visible;
+        padding: 15px;
+      }
+
+      .view-stack,
+      .view-stack.compare,
+      main.compare-mode .topline,
+      .topline {
+        width: 100%;
+      }
+
+      .view-stack.compare {
+        overflow-x: visible;
+      }
+
+      .comparison-grid {
+        width: 100%;
+        grid-template-columns: 1fr;
+      }
+
+      .insight-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .evidence-panel {
+        position: static;
+      }
+
+      .view-panel {
+        width: 100%;
+      }
+
+      .memory-line.table-line,
+      .memory-line.heading-line {
+        white-space: normal;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand-block">
+        <p class="brand-title">Attemory Explorer</p>
+        <p class="brand-subtitle">See how attention-based retrieval ranks evidence over text, tables, and event timelines.</p>
+      </div>
+      <nav class="header-links" aria-label="Explorer links">
+        <a href="../">Landing</a>
+        <a href="https://github.com/AttemorySystem/Attemory">GitHub</a>
+      </nav>
+    </header>
+
+    <div class="shell">
+      <aside>
+        <div>
+          <h1>Examples</h1>
+        </div>
+
+        <div class="nav-tree" id="nav-tree"></div>
+        <select class="dataset-select" id="dataset-select" aria-label="Select example type"></select>
+        <select class="query-select" id="query-select" aria-label="Select query"></select>
+      </aside>
+
+      <main>
+        <div class="topline">
+          <h2>
+            <span id="view-title">Attention Score View</span>
+          </h2>
+          <div class="legend">
+            <span>lower attention</span>
+            <span class="legend-bar"></span>
+            <span>rank 1 evidence</span>
+          </div>
+        </div>
+        <div class="status" id="status">Loading explorer data...</div>
+        <div class="view-stack" id="view-stack"></div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const navTreeEl = $("nav-tree");
+    const datasetSelectEl = $("dataset-select");
+    const querySelectEl = $("query-select");
+    const viewStackEl = $("view-stack");
+    const statusEl = $("status");
+    const viewTitleEl = $("view-title");
+    const mainEl = document.querySelector("main");
+
+    const datasetConfig = {
+      diary: { title: "Plain Text Understanding", path: "./plaintext_heatmap.json" },
+      table: { title: "Table Understanding", path: "./table_heatmap.json" },
+      incident: { title: "Incident Timeline Understanding", path: "./incident_heatmap.json" },
+    };
+
+    let datasets = {};
+    let activeDataset = "diary";
+    let activeViews = {
+      diary: "direct",
+      table: "target-date",
+      incident: "root-cause-0",
+    };
+
+    function currentData() {
+      return datasets[activeDataset];
+    }
+
+    function queryByIndex(queryIndex, dataset = currentData()) {
+      return (dataset.queries || []).find((query) => query.query_index === queryIndex) || dataset.queries?.[queryIndex];
+    }
+
+    function tableGroups(dataset) {
+      return (dataset?.queries || []).map((query) => ({
+        key: query.key || `query-${query.query_index}`,
+        title: query.title || "Query",
+        description: query.description || "Each table cell is a memory; rank controls the highlighted cell.",
+        queryIndices: [query.query_index],
+      }));
+    }
+
+    function diaryGroups(dataset) {
+      const queries = dataset?.queries || [];
+      const direct = queries.find((query) => /direct/i.test(query.title || "")) || queries[0];
+      const contexts = queries.filter((query) => /query context/i.test(query.title || ""));
+      const temporal = queries.find((query) => /temporal/i.test(query.title || "")) || queries[queries.length - 1];
+      return [
+        {
+          key: "direct",
+          title: "Direct fact",
+          description: "Direct query: retrieve the matching memory from the question alone.",
+          preview: direct?.query || "",
+          queryIndices: direct ? [direct.query_index] : [],
+        },
+        {
+          key: "context",
+          title: "Query context",
+          description: "Query context: the same question can focus on different memories when context changes.",
+          preview: "Compare evening social activity vs family communication",
+          compare: true,
+          queryIndices: contexts.map((query) => query.query_index),
+        },
+        {
+          key: "temporal",
+          title: "Temporal reasoning",
+          description: "Temporal reasoning: resolve the time reference first, then retrieve the target memory.",
+          preview: temporal?.query || "",
+          queryIndices: temporal ? [temporal.query_index] : [],
+        },
+      ].filter((group) => group.queryIndices.length > 0);
+    }
+
+    function incidentGroups(dataset) {
+      const queries = dataset?.queries || [];
+      return queries.map((query) => ({
+        key: `root-cause-${query.query_index}`,
+        title: String(query.title || "Root cause").replace(/^Root cause:\s*/i, ""),
+        description: query.description || "Root-cause retrieval: choose the right physical fault among several facility events.",
+        preview: query.query || "",
+        queryIndices: [query.query_index],
+      })).filter((group) => group.queryIndices.length > 0);
+    }
+
+    function viewGroups(datasetKey = activeDataset) {
+      const dataset = datasets[datasetKey];
+      if (!dataset) return [];
+      if (datasetKey === "table") return tableGroups(dataset);
+      if (datasetKey === "incident") return incidentGroups(dataset);
+      return diaryGroups(dataset);
+    }
+
+    function rankMap(query) {
+      return (query?.results || []).reduce((map, result) => {
+        if (result.memory_index !== undefined && result.rank) {
+          map.set(result.memory_index, result.rank);
+        }
+        return map;
+      }, new Map());
+    }
+
+    function alphaForRank(rank) {
+      if (!rank) return 0.02;
+      const topAlpha = [0.34, 0.27, 0.22, 0.18, 0.14, 0.11, 0.09];
+      if (rank <= topAlpha.length) return topAlpha[rank - 1];
+      return 0.035 + 0.045 * Math.exp(-(rank - topAlpha.length - 1) / 8);
+    }
+
+    function rankTitle(rank) {
+      return rank ? `rank ${rank}` : "";
+    }
+
+    function createMemoryBoard() {
+      const board = document.createElement("section");
+      board.className = "memory-board";
+      const raw = document.createElement("pre");
+      raw.className = "memory-text";
+      board.appendChild(raw);
+      return { board, raw };
+    }
+
+    function applyMemoryScore(el, memory, ranks) {
+      const rank = ranks.get(memory.memory_index);
+      const alpha = alphaForRank(rank);
+      el.style.setProperty("--heat-alpha", alpha.toFixed(3));
+      el.dataset.memoryIndex = String(memory.memory_index);
+      el.title = rankTitle(rank);
+      if (rank && rank <= 3) {
+        el.classList.add(`rank-${rank}`);
+      }
+    }
+
+    function renderDatasets() {
+      navTreeEl.innerHTML = "";
+      datasetSelectEl.innerHTML = "";
+      for (const [key, config] of Object.entries(datasetConfig)) {
+        if (!datasets[key]) continue;
+
+        const treeGroup = document.createElement("section");
+        treeGroup.className = "tree-group";
+
+        const root = document.createElement("button");
+        root.type = "button";
+        root.className = "tree-root" + (key === activeDataset ? " active" : "");
+        root.setAttribute("aria-expanded", "true");
+        root.textContent = config.title;
+        root.addEventListener("click", () => {
+          activeDataset = key;
+          ensureActiveView();
+          renderAll();
+        });
+        treeGroup.appendChild(root);
+
+        const children = document.createElement("div");
+        children.className = "tree-children";
+        for (const group of viewGroups(key)) {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "tree-button"
+            + (key === activeDataset && group.key === activeView() ? " active" : "");
+          item.innerHTML = `<span class="query-title">${group.title}</span>`;
+          item.addEventListener("click", () => {
+            activeDataset = key;
+            activeViews[key] = group.key;
+            renderAll();
+          });
+          children.appendChild(item);
+        }
+        treeGroup.appendChild(children);
+        navTreeEl.appendChild(treeGroup);
+
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = config.title;
+        option.selected = key === activeDataset;
+        datasetSelectEl.appendChild(option);
+      }
+    }
+
+    function activeView() {
+      return activeViews[activeDataset];
+    }
+
+    function ensureActiveView() {
+      const groups = viewGroups();
+      if (!groups.some((group) => group.key === activeView())) {
+        activeViews[activeDataset] = groups[0]?.key || "";
+      }
+    }
+
+    function renderQueries() {
+      querySelectEl.innerHTML = "";
+      const groups = viewGroups();
+      ensureActiveView();
+      for (const group of groups) {
+        const option = document.createElement("option");
+        option.value = group.key;
+        option.textContent = group.title;
+        option.selected = group.key === activeView();
+        querySelectEl.appendChild(option);
+      }
+    }
+
+    function createTextBoard(queryIndex, query) {
+      const dataset = currentData();
+      const ranks = rankMap(query);
+      const { board, raw } = createMemoryBoard();
+
+      for (const memory of dataset.memories || []) {
+        const line = document.createElement("div");
+        line.className = "memory-line text-line";
+        const span = document.createElement("span");
+        span.className = "memory-span";
+        span.textContent = memory.text;
+        applyMemoryScore(span, memory, ranks);
+        line.appendChild(span);
+        raw.appendChild(line);
+      }
+
+      return board;
+    }
+
+    function appendField(card, labelText, valueText, emptyText) {
+      const field = document.createElement("div");
+      const fieldKey = String(labelText || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      field.className = `field field-${fieldKey}`;
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = labelText;
+      const value = document.createElement("p");
+      value.className = valueText ? "value" : "value empty";
+      value.textContent = valueText || emptyText;
+      field.appendChild(label);
+      field.appendChild(value);
+      card.appendChild(field);
+    }
+
+    function createQueryCard(query) {
+      const card = document.createElement("section");
+      card.className = "query-card";
+      appendField(card, "Query Context", query.query_context, "No query context.");
+      appendField(card, "Query", query.query || "", "");
+      return card;
+    }
+
+    function createScenarioNote(group) {
+      const note = document.createElement("p");
+      note.className = "scenario-note";
+      note.textContent = group.description || "";
+      return note;
+    }
+
+    function expectedResult(query) {
+      return (query?.results || []).find((result) => {
+        return result.match_expected || result.id === query.expected_label;
+      });
+    }
+
+    function cleanAnswerText(text) {
+      return String(text || "").replace(/^\|\s*/, "").trim();
+    }
+
+    function createAnswerLine(query) {
+      const hit = expectedResult(query);
+      const answer = cleanAnswerText(query?.answer || hit?.value || hit?.text);
+      if (!answer) return null;
+
+      const line = document.createElement("p");
+      line.className = "answer-line";
+
+      const label = document.createElement("span");
+      label.className = "answer-label";
+      label.textContent = "Answer: ";
+      line.appendChild(label);
+
+      const value = document.createElement("span");
+      const suffix = /[.!?]$/.test(answer) ? "" : ".";
+      value.textContent = `${answer}${suffix}`;
+      line.appendChild(value);
+
+      if (query?.answer_note) {
+        const note = document.createElement("span");
+        note.className = "answer-note";
+        note.textContent = ` ${query.answer_note}`;
+        line.appendChild(note);
+      }
+
+      return line;
+    }
+
+    function createEvidencePanel(query) {
+      const panel = document.createElement("aside");
+      panel.className = "evidence-panel";
+
+      const title = document.createElement("h3");
+      title.textContent = "Top evidence";
+      panel.appendChild(title);
+
+      const help = document.createElement("p");
+      help.className = "evidence-help";
+      help.textContent = "Ranked memory cells returned by the retrieval pass.";
+      panel.appendChild(help);
+
+      const list = document.createElement("div");
+      list.className = "evidence-list";
+
+      for (const result of (query?.results || []).slice(0, 5)) {
+        const item = document.createElement("article");
+        item.className = "evidence-item" + (result.match_expected ? " expected" : "");
+        if (result.memory_index !== undefined) {
+          item.dataset.memoryIndex = String(result.memory_index);
+        }
+
+        const meta = document.createElement("div");
+        meta.className = "evidence-meta";
+
+        const rank = document.createElement("span");
+        rank.className = "rank-badge";
+        rank.textContent = `Rank ${result.rank}`;
+        meta.appendChild(rank);
+
+        if (result.match_expected) {
+          const expected = document.createElement("span");
+          expected.className = "expected-badge";
+          expected.textContent = "answer";
+          meta.appendChild(expected);
+        }
+
+        const id = result.id || result.day || result.line_number;
+        if (id) {
+          const source = document.createElement("span");
+          source.textContent = `#${id}`;
+          meta.appendChild(source);
+        }
+
+        const text = document.createElement("p");
+        text.className = "evidence-text";
+        text.textContent = cleanAnswerText(result.value || result.text || "");
+
+        item.appendChild(meta);
+        item.appendChild(text);
+        list.appendChild(item);
+      }
+
+      if (!list.children.length) {
+        const empty = document.createElement("p");
+        empty.className = "evidence-help";
+        empty.textContent = "No ranked evidence is available for this query.";
+        list.appendChild(empty);
+      }
+
+      panel.appendChild(list);
+      return panel;
+    }
+
+    function createMemoryPanel(queryIndex) {
+      const query = queryByIndex(queryIndex);
+      const panel = document.createElement("section");
+      panel.className = "view-panel";
+      panel.appendChild(createQueryCard(query));
+      const layout = document.createElement("div");
+      layout.className = "insight-layout";
+      const visual = document.createElement("div");
+      visual.className = "visual-column";
+      visual.appendChild(createTextBoard(queryIndex, query));
+      const answer = createAnswerLine(query);
+      if (answer) visual.appendChild(answer);
+      layout.appendChild(visual);
+      layout.appendChild(createEvidencePanel(query));
+      panel.appendChild(layout);
+      return panel;
+    }
+
+    function createTableBoard(queryIndex, query) {
+      const dataset = currentData();
+      const tableData = dataset.table;
+      const ranks = rankMap(query);
+      const memoriesById = new Map((dataset.memories || []).map((memory) => [memory.id, memory]));
+
+      const { board, raw } = createMemoryBoard();
+
+      function appendPlainLine(text) {
+        const line = document.createElement("div");
+        line.className = text ? "memory-line heading-line" : "memory-line";
+        line.textContent = text;
+        raw.appendChild(line);
+      }
+
+      function appendCell(line, value, memoryId) {
+        const span = document.createElement("span");
+        span.className = "memory-span";
+        span.textContent = `| ${value} `;
+        const memory = memoriesById.get(memoryId);
+        if (memory) {
+          span.dataset.memoryId = memory.id;
+          applyMemoryScore(span, memory, ranks);
+        }
+        line.appendChild(span);
+      }
+
+      function appendMemoryLine(value, memoryId) {
+        const line = document.createElement("div");
+        line.className = "memory-line note-line";
+        const span = document.createElement("span");
+        span.className = "memory-span";
+        span.textContent = value;
+        const memory = memoriesById.get(memoryId);
+        if (memory) {
+          span.dataset.memoryId = memory.id;
+          applyMemoryScore(span, memory, ranks);
+        }
+        line.appendChild(span);
+        raw.appendChild(line);
+      }
+
+      function appendTableLine(values, memoryIds) {
+        const line = document.createElement("div");
+        line.className = "memory-line table-line";
+        for (const [columnIndex, value] of values.entries()) {
+          appendCell(line, value, memoryIds?.[columnIndex]);
+        }
+        const tail = document.createElement("span");
+        tail.textContent = "|";
+        line.appendChild(tail);
+        raw.appendChild(line);
+      }
+
+      appendPlainLine(`# ${tableData.title || "Release Tracker"}`);
+      appendPlainLine("");
+      if ((tableData.notes || []).length) {
+        appendPlainLine("## Notes");
+        appendPlainLine("");
+        for (const [noteIndex, note] of tableData.notes.entries()) {
+          appendMemoryLine(note, tableData.note_memory_ids?.[noteIndex]);
+        }
+        appendPlainLine("");
+        appendPlainLine("## Table");
+        appendPlainLine("");
+      }
+      appendTableLine(tableData.columns || [], tableData.header_memory_ids || []);
+      const separator = document.createElement("div");
+      separator.className = "memory-line table-line";
+      separator.textContent = `| ${(tableData.columns || []).map(() => "---").join(" | ")} |`;
+      raw.appendChild(separator);
+      for (const [rowIndex, row] of (tableData.rows || []).entries()) {
+        appendTableLine(row, tableData.row_memory_ids?.[rowIndex] || []);
+      }
+      return board;
+    }
+
+    function createTablePanel(queryIndex) {
+      const query = queryByIndex(queryIndex);
+      const panel = document.createElement("section");
+      panel.className = "table-panel";
+      panel.appendChild(createQueryCard(query));
+      const layout = document.createElement("div");
+      layout.className = "insight-layout";
+      const visual = document.createElement("div");
+      visual.className = "visual-column";
+      visual.appendChild(createTableBoard(queryIndex, query));
+      const answer = createAnswerLine(query);
+      if (answer) visual.appendChild(answer);
+      layout.appendChild(visual);
+      layout.appendChild(createEvidencePanel(query));
+      panel.appendChild(layout);
+      return panel;
+    }
+
+    function renderView() {
+      const groups = viewGroups();
+      const group = groups.find((item) => item.key === activeView()) || groups[0];
+      viewStackEl.innerHTML = "";
+      if (!group) return;
+      const datasetLabel = datasetConfig[activeDataset]?.title || "Attention Score View";
+      viewTitleEl.textContent = datasetLabel;
+      const isDiary = activeDataset === "diary";
+      const isTable = activeDataset === "table";
+      const isIncident = activeDataset === "incident";
+      const isCompare = !isTable && Boolean(group.compare) && group.queryIndices.length > 1;
+      mainEl.classList.toggle("diary-mode", isDiary);
+      mainEl.classList.toggle("compare-mode", isCompare);
+      mainEl.classList.toggle("table-mode", isTable);
+      mainEl.classList.toggle("incident-mode", isIncident);
+      viewStackEl.className = "view-stack"
+        + (isDiary ? " diary" : "")
+        + (isCompare ? " compare" : "")
+        + (isTable ? " table" : "")
+        + (isIncident ? " incident" : "");
+      viewStackEl.appendChild(createScenarioNote(group));
+
+      if (isTable) {
+        viewStackEl.appendChild(createTablePanel(group.queryIndices[0]));
+        return;
+      }
+
+      if (isCompare) {
+        const grid = document.createElement("div");
+        grid.className = "comparison-grid";
+        for (const queryIndex of group.queryIndices) {
+          grid.appendChild(createMemoryPanel(queryIndex));
+        }
+        viewStackEl.appendChild(grid);
+        return;
+      }
+
+      viewStackEl.appendChild(createMemoryPanel(group.queryIndices[0]));
+    }
+
+    function syncUrl() {
+      const url = new URL(window.location.href);
+      url.searchParams.set("dataset", activeDataset);
+      url.searchParams.set("view", activeView());
+      window.history.replaceState(null, "", url);
+    }
+
+    function renderAll() {
+      ensureActiveView();
+      renderDatasets();
+      renderQueries();
+      renderView();
+      syncUrl();
+    }
+
+    function defaultDatasetKey() {
+      const requested = new URLSearchParams(window.location.search).get("dataset");
+      return datasets[requested] ? requested : "diary";
+    }
+
+    function defaultViewKey(datasetKey) {
+      const requested = new URLSearchParams(window.location.search).get("view");
+      const groups = viewGroups(datasetKey);
+      return groups.some((group) => group.key === requested) ? requested : groups[0]?.key || "";
+    }
+
+    function applyData(payloads) {
+      datasets = payloads;
+      activeDataset = defaultDatasetKey();
+      for (const key of Object.keys(datasets)) {
+        activeViews[key] = defaultViewKey(key);
+      }
+      ensureActiveView();
+      statusEl.hidden = true;
+      renderAll();
+    }
+
+    async function loadDefault() {
+      const entries = await Promise.all(
+        Object.entries(datasetConfig).map(async ([key, config]) => {
+          const response = await fetch(config.path, { cache: "no-store" });
+          if (!response.ok) throw new Error(`${config.path}: HTTP ${response.status}`);
+          return [key, await response.json()];
+        })
+      );
+      applyData(Object.fromEntries(entries));
+    }
+
+    window.addEventListener("resize", () => {
+      if (currentData()) renderView();
+    }, { passive: true });
+
+    datasetSelectEl.addEventListener("change", () => {
+      activeDataset = datasetSelectEl.value;
+      ensureActiveView();
+      renderAll();
+    });
+
+    querySelectEl.addEventListener("change", () => {
+      activeViews[activeDataset] = querySelectEl.value;
+      renderAll();
+    });
+
+    function setFocusedMemory(memoryIndex) {
+      for (const el of viewStackEl.querySelectorAll(".focused")) {
+        el.classList.remove("focused");
+      }
+      if (memoryIndex === null || memoryIndex === undefined) return;
+      const key = String(memoryIndex);
+      for (const el of viewStackEl.querySelectorAll("[data-memory-index]")) {
+        if (el.dataset.memoryIndex === key) {
+          el.classList.add("focused");
+        }
+      }
+    }
+
+    viewStackEl.addEventListener("mouseover", (event) => {
+      const target = event.target.closest("[data-memory-index]");
+      if (!target || !viewStackEl.contains(target)) return;
+      setFocusedMemory(target.dataset.memoryIndex);
+    });
+
+    viewStackEl.addEventListener("mouseleave", () => {
+      setFocusedMemory(null);
+    });
+
+    loadDefault().catch((error) => {
+      console.error(`Failed to load explorer data: ${error.message}`);
+      viewTitleEl.textContent = "Attention Score View";
+      statusEl.hidden = false;
+      statusEl.className = "status error";
+      statusEl.textContent = `Failed to load explorer data: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
