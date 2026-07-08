@@ -53,19 +53,6 @@
       align-items: center;
     }
 
-    .hero-slideshow {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      transform: scale(1.04);
-      transform-origin: center;
-      opacity: 0.44;
-      filter: saturate(0.92) contrast(1.03);
-      pointer-events: none;
-      background: #f8fafc;
-    }
-
     .carousel-slide {
       position: absolute;
       inset: 0;
@@ -78,10 +65,6 @@
     .slide-1 { animation-delay: 0s; }
     .slide-2 { animation-delay: 4s; }
     .slide-3 { animation-delay: 8s; }
-
-    .hero-slideshow .carousel-slide {
-      object-fit: cover;
-    }
 
     @keyframes screenshot-cycle {
       0%, 27% { opacity: 1; }
@@ -97,13 +80,6 @@
       .carousel-slide:first-child {
         opacity: 1;
       }
-    }
-
-    .hero::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: rgba(10, 18, 32, 0.62);
     }
 
     .hero-inner {
@@ -703,11 +679,6 @@
 </head>
 <body>
   <header class="hero">
-    <div class="hero-slideshow" aria-hidden="true">
-      <img class="carousel-slide slide-1" src="table-understanding.png" alt="">
-      <img class="carousel-slide slide-2" src="root-cause.png" alt="">
-      <img class="carousel-slide slide-3" src="temporal-reasoning.png" alt="">
-    </div>
     <div class="hero-inner">
       <div class="brand">
         <img src="assets/attemory_logo.png" alt="">
@@ -756,7 +727,7 @@
       </div>
       <p class="hero-benchmark-note">
         Reproducible benchmark numbers, not marketing slogans. See the
-        <a href="https://github.com/AttemorySystem/Attemory/tree/main/benchmarks">benchmarks directory</a>.
+        <a href="https://github.com/AttemorySystem/Attemory/tree/main/benchmarks">benchmarks</a>.
       </p>
     </div>
   </header>
@@ -966,7 +937,7 @@
         corpora and raw benchmark queries, without query rewriting,
         summarization-as-storage, agent-driven exploration, BM25/vector hybrid
         stacks, or cloud retrieval services. See the
-        <a href="https://github.com/AttemorySystem/Attemory/tree/main/benchmarks">benchmarks directory</a>
+        <a href="https://github.com/AttemorySystem/Attemory/tree/main/benchmarks">benchmarks</a>
         for details.
       </p>
     </section>
