@@ -60,7 +60,7 @@ behavior, see [doc/usage.md](doc/usage.md).
 
 ## Interactive Explorer
 
-Try the [Attemory Explorer](https://attemorysystem.github.io/attemory/explorer/)
+Try the [Attemory Explorer](https://attemorysystem.github.io/explorer/)
 to see attention-based retrieval in action. It visualizes real Attemory search
 runs over plain text, tables, and incident timelines, showing its ability to
 handle temporal reasoning, table understanding, and root-cause retrieval.
@@ -279,7 +279,7 @@ full workflow.
 | --- | --- |
 | Python and HTTP retrieval API | [doc/usage.md](doc/usage.md) |
 | Repository Search CLI and Claude Code plugin usage | [doc/repository-search.md](doc/repository-search.md) |
-| Interactive examples | [Attemory Explorer](https://attemorysystem.github.io/attemory/explorer/) |
+| Interactive examples | [Attemory Explorer](https://attemorysystem.github.io/explorer/) |
 | Benchmarks and reproduction | [benchmarks/](benchmarks/) |
 
 ## Build From Source
