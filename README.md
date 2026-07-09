@@ -58,6 +58,13 @@ searches can restore it without rebuilding.
 For implementation details, server options, persistence, templates, and API
 behavior, see [doc/usage.md](doc/usage.md).
 
+## Interactive Explorer
+
+Try the [Attemory Explorer](https://attemorysystem.github.io/attemory/explorer/)
+to see attention-based retrieval in action. It visualizes real Attemory search
+runs over plain text, tables, and incident timelines, showing its ability to
+handle temporal reasoning, table understanding, and root-cause retrieval.
+
 ## Benchmarks
 
 Attemory is evaluated in two ways:
@@ -131,7 +138,7 @@ uv pip install "attemory[cpu]"    # Linux CPU
 
 # Linux CUDA
 uv pip install "attemory[cuda]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 ```
 
 The same install targets work with `pip`:
@@ -140,7 +147,7 @@ The same install targets work with `pip`:
 pip install attemory
 pip install "attemory[cpu]"
 pip install "attemory[cuda]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 ```
 
 On macOS Apple Silicon, `attemory` automatically installs the Metal runtime. On
@@ -148,7 +155,7 @@ Linux, choose `cpu` or a CUDA extra explicitly. Use `cuda-cu126` by default:
 
 ```bash
 pip install "attemory[cuda]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 ```
 
 If you are using a Blackwell GPU such as RTX 50 series, use `cuda-cu129` with
@@ -156,7 +163,7 @@ the CUDA 12.9 wheel index:
 
 ```bash
 pip install "attemory[cuda-cu129]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu129/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu129/
 ```
 
 Use `cuda-cu124` or `cuda-cu121` only when your NVIDIA driver is too old for
@@ -272,6 +279,7 @@ full workflow.
 | --- | --- |
 | Python and HTTP retrieval API | [doc/usage.md](doc/usage.md) |
 | Repository Search CLI and Claude Code plugin usage | [doc/repository-search.md](doc/repository-search.md) |
+| Interactive examples | [Attemory Explorer](https://attemorysystem.github.io/attemory/explorer/) |
 | Benchmarks and reproduction | [benchmarks/](benchmarks/) |
 
 ## Build From Source
@@ -323,7 +331,7 @@ If you use Attemory in research or benchmarks, please cite it as:
   title        = {Attemory: Attention-Native Memory Retrieval System},
   author       = {Lance Fang},
   year         = {2026},
-  url          = {https://github.com/AttemorySystem/Attemory},
+  url          = {https://github.com/AttemorySystem/attemory},
 }
 ```
 

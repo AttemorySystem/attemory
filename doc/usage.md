@@ -66,7 +66,7 @@ For Linux NVIDIA GPUs:
 
 ```bash
 uv pip install "attemory[cuda]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 ```
 
 The same extras work with `pip`:
@@ -75,7 +75,7 @@ The same extras work with `pip`:
 pip install attemory
 pip install "attemory[cpu]"
 pip install "attemory[cuda]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 ```
 
 Specific CUDA runtime packages are available when you need to match a GPU or
@@ -83,16 +83,16 @@ driver fleet explicitly:
 
 ```bash
 pip install "attemory[cuda-cu121]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu121/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu121/
 
 pip install "attemory[cuda-cu124]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu124/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu124/
 
 pip install "attemory[cuda-cu126]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/
 
 pip install "attemory[cuda-cu129]" \
-  --extra-index-url https://attemorysystem.github.io/Attemory/whl/cu129/
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu129/
 ```
 
 Use:
@@ -108,7 +108,7 @@ not install a native runtime. Choose `cpu` or a CUDA extra explicitly.
 
 Most Linux GPU users should install `attemory[cuda]`, which currently resolves
 to `cuda-cu126`, together with
-`--extra-index-url https://attemorysystem.github.io/Attemory/whl/cu126/`. Use
+`--extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/`. Use
 `cuda-cu129` for Blackwell GPUs such as RTX 50 series; it includes native
 `sm_120` kernels and targets newer Linux systems with glibc 2.28 or later.
 Choose `cuda-cu124` or `cuda-cu121` only when your NVIDIA driver is too old for

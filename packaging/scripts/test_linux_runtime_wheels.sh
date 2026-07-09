@@ -10,7 +10,7 @@ HOST="${HOST:-127.0.0.1}"
 SERVER_START_TIMEOUT="${SERVER_START_TIMEOUT:-3600}"
 MODEL_TIER="${MODEL_TIER:-tiny}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-CUDA_WHEEL_INDEX_ROOT="${CUDA_WHEEL_INDEX_ROOT:-https://attemorysystem.github.io/Attemory/whl}"
+CUDA_WHEEL_INDEX_ROOT="${CUDA_WHEEL_INDEX_ROOT:-https://attemorysystem.github.io/attemory/whl}"
 
 usage() {
   cat <<'EOF'
@@ -29,7 +29,7 @@ Environment:
   MODEL_TIER             Server model tier; defaults to tiny.
   PIP_RUNTIME_EXTRAS     Space-separated extras for pip mode; defaults to doc/usage.md Linux extras.
   CUDA_WHEEL_INDEX_ROOT   GitHub Pages wheel index root for CUDA pip tests.
-                          Defaults to https://attemorysystem.github.io/Attemory/whl.
+                          Defaults to https://attemorysystem.github.io/attemory/whl.
 EOF
 }
 
