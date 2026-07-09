@@ -817,8 +817,8 @@
         </a>
       </div>
       <p class="hero-benchmark-note">
-        These SOTA-class results are not marketing slogans: they are locally reproducible, with no benchmark-specific hacks. See
-        <a href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">benchmarks</a> for details.
+        These SOTA-class results are not marketing slogans: they are locally reproducible, with no benchmark-specific hacks.
+        See <a href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">details</a>.
       </p>
     </div>
   </header>
@@ -948,7 +948,10 @@
         <p class="section-copy">
           High recall is what makes token savings usable. Attemory reaches
           SOTA-class results across long conversations, million-token memory,
-          and multi-language codebases without benchmark-specific retrieval hacks.
+          and multi-language codebases. LongMemEval-M is especially important:
+          its context is long enough that few memory systems evaluate on it,
+          while Attemory still retrieves all labeled evidence messages in the
+          top 50 for 92.55% of answerable queries.
         </p>
       </div>
       <div class="quality-list">
