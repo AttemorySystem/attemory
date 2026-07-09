@@ -44,13 +44,12 @@
 
     .hero {
       position: relative;
-      min-height: 74svh;
-      max-height: 820px;
+      min-height: auto;
       overflow: hidden;
       background: #111827;
       color: #fff;
       display: grid;
-      align-items: center;
+      align-items: start;
     }
 
     .carousel-slide {
@@ -87,23 +86,31 @@
       z-index: 1;
       width: min(1120px, calc(100% - 40px));
       margin: 0 auto;
-      padding: 64px 0 72px;
+      padding: 48px 0 42px;
     }
 
     .brand {
       display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      width: 100%;
+      margin-bottom: 30px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
       gap: 12px;
-      margin-bottom: 38px;
+      min-width: 0;
     }
 
     .brand img {
-      width: 48px;
+      display: block;
+      width: 70px;
       height: 48px;
-      object-fit: contain;
-      background: rgba(255, 255, 255, 0.92);
-      border-radius: 10px;
-      padding: 5px;
+      object-fit: cover;
+      border-radius: 8px;
     }
 
     .brand-name {
@@ -111,6 +118,23 @@
       font-weight: 800;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+    }
+
+    .hero-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 16px;
+      max-width: min(560px, 100%);
+      margin-left: auto;
+      color: rgba(255, 255, 255, 0.76);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .hero-nav a:hover {
+      color: #fff;
     }
 
     h1 {
@@ -133,7 +157,7 @@
 
     .hero-copy {
       max-width: 720px;
-      margin: 24px 0 0;
+      margin: 22px 0 0;
       color: rgba(255, 255, 255, 0.86);
       font-size: clamp(17px, 2.1vw, 22px);
       line-height: 1.42;
@@ -142,8 +166,9 @@
     .hero-actions {
       display: flex;
       flex-wrap: wrap;
+      align-items: center;
       gap: 12px;
-      margin-top: 32px;
+      margin-top: 28px;
     }
 
     .button {
@@ -165,12 +190,19 @@
       color: #111827;
     }
 
+    .button.tertiary {
+      border-color: transparent;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.86);
+      padding-inline: 10px;
+    }
+
     .hero-stats {
       display: grid;
       grid-template-columns: 1.18fr 0.92fr 0.92fr;
       gap: 12px;
       max-width: 880px;
-      margin-top: 38px;
+      margin-top: 30px;
     }
 
     .hero-stat {
@@ -323,7 +355,8 @@
     }
 
     .metric-table .positive {
-      color: var(--green);
+      color: var(--ink);
+      font-size: 1.08em;
       font-weight: 900;
     }
 
@@ -370,9 +403,33 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .install-card {
+      min-width: 0;
+      margin: 18px 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+    }
+
+    .install-card h3 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.25;
+    }
+
+    .install-card p {
+      max-width: 760px;
+      margin: 9px 0 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
     .quality-item,
     .use-card,
     .diff-card {
+      min-width: 0;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--surface);
@@ -397,12 +454,13 @@
     }
 
     .diff-card h3 {
-      font-size: 18px;
+      font-size: 20px;
+      line-height: 1.2;
     }
 
     .diff-card p {
-      font-size: 15.5px;
-      line-height: 1.55;
+      font-size: 16.5px;
+      line-height: 1.58;
     }
 
     .quality-item {
@@ -427,8 +485,9 @@
     }
 
     .quality-result {
-      color: var(--green);
-      font-weight: 850;
+      color: var(--ink);
+      font-size: 15.5px;
+      font-weight: 900;
     }
 
     .quality-result span {
@@ -460,9 +519,13 @@
     }
 
     .code-block {
+      display: block;
+      width: 100%;
+      max-width: 100%;
       margin: 16px 0 0;
       padding: 14px;
-      overflow: auto;
+      overflow-x: auto;
+      overflow-y: hidden;
       border: 1px solid #1f2937;
       border-radius: 7px;
       background: #111827;
@@ -470,6 +533,7 @@
       font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       overflow-wrap: normal;
       white-space: pre;
+      -webkit-overflow-scrolling: touch;
     }
 
     .details-link {
@@ -487,9 +551,11 @@
       grid-template-columns: minmax(0, 1fr) 330px;
       gap: 22px;
       align-items: start;
-      border-top: 1px solid var(--line);
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
+    }
+
+    .explorer-preview .section-heading {
+      grid-column: 1 / -1;
+      margin-bottom: 6px;
     }
 
     .preview-frame-wrap {
@@ -527,26 +593,11 @@
     }
 
     .preview-copy .button {
-      margin-top: 20px;
+      margin-top: 18px;
       align-self: center;
       border-color: var(--ink);
       color: var(--surface);
       background: var(--ink);
-    }
-
-    .preview-points {
-      display: grid;
-      gap: 9px;
-      margin: 18px 0 0;
-      padding: 0;
-      list-style: none;
-      color: var(--ink-soft);
-      font-size: 14px;
-    }
-
-    .preview-points li {
-      padding-left: 13px;
-      border-left: 3px solid var(--accent-line);
     }
 
     .footer {
@@ -562,6 +613,13 @@
       padding: 34px 0;
       color: #cbd5e1;
       font-size: 14px;
+    }
+
+    .footer .section > div:first-child {
+      color: #f8fafc;
+      font-size: 17px;
+      font-weight: 800;
+      line-height: 1.3;
     }
 
     .footer-links {
@@ -582,19 +640,26 @@
       }
 
       .hero-inner {
-        padding: 42px 0 34px;
+        padding: 42px 0 28px;
       }
 
       .brand {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 14px;
         margin-bottom: 22px;
+      }
+
+      .hero-nav {
+        justify-content: flex-start;
+        gap: 14px;
+        max-width: 100%;
+        margin-left: 0;
+        font-size: 13px;
       }
 
       h1 {
         font-size: clamp(30px, 8.7vw, 46px);
-      }
-
-      .title-line + .title-line {
-        font-size: 0.84em;
       }
 
       .hero-copy {
@@ -663,7 +728,24 @@
       }
 
       .preview-copy {
+        max-width: 100%;
         min-height: 0;
+      }
+
+      .explorer-preview .section-heading,
+      .preview-copy .section-copy {
+        max-width: 100%;
+        min-width: 0;
+      }
+
+      .explorer-preview .title-line {
+        white-space: normal;
+      }
+
+      .preview-copy .button {
+        align-self: center;
+        margin-left: auto;
+        margin-right: auto;
       }
 
       .metric-table {
@@ -681,8 +763,17 @@
   <header class="hero">
     <div class="hero-inner">
       <div class="brand">
-        <img src="assets/attemory_logo.png" alt="">
-        <div class="brand-name">Attemory</div>
+        <div class="brand-lockup">
+          <img src="assets/attemory_logo_orange.png" alt="Attemory">
+          <div class="brand-name">Attemory</div>
+        </div>
+        <nav class="hero-nav" aria-label="Primary links">
+          <a href="https://github.com/AttemorySystem/attemory">GitHub</a>
+          <a href="https://github.com/AttemorySystem/attemory/tree/main/doc">Docs</a>
+          <a href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">Benchmarks</a>
+          <a href="explorer/">Explorer</a>
+          <a href="https://pypi.org/project/attemory/">PyPI</a>
+        </nav>
       </div>
       <h1>
         <span class="title-line">Attention-native</span>
@@ -694,9 +785,9 @@
         similarity.
       </p>
       <div class="hero-actions">
-        <a class="button primary" href="#get-started">Get started</a>
-        <a class="button" href="explorer/">Open explorer</a>
-        <a class="button" href="https://github.com/AttemorySystem/attemory">View GitHub</a>
+        <a class="button primary" href="#get-started">Get Started</a>
+        <a class="button" href="explorer/">Interactive Examples</a>
+        <a class="button tertiary" href="https://github.com/AttemorySystem/attemory">View GitHub</a>
       </div>
       <div class="hero-stats" aria-label="Attemory benchmark highlights">
         <a class="hero-stat" href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">
@@ -714,7 +805,7 @@
           <span class="hero-stat-title">Code retrieval</span>
           <div class="hero-metric">
             <strong>0.9055</strong>
-            <span>Semble file-level NDCG@10 across 63 repos in the Semble benchmark</span>
+            <span>file-level NDCG@10 across 63 repos in the semble benchmark</span>
           </div>
         </a>
         <a class="hero-stat" href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">
@@ -726,8 +817,8 @@
         </a>
       </div>
       <p class="hero-benchmark-note">
-        Reproducible benchmark numbers, not marketing slogans. See the
-        <a href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">benchmarks</a>.
+        These SOTA-class results are not marketing slogans: they are locally reproducible, with no benchmark-specific hacks. See
+        <a href="https://github.com/AttemorySystem/attemory/tree/main/benchmarks">benchmarks</a> for details.
       </p>
     </div>
   </header>
@@ -753,7 +844,7 @@
           <p>Raw corpora are prefilled once into reusable KV cache. Later searches restore cached attention state locally, so repeated retrieval avoids replaying the corpus from scratch.</p>
         </article>
         <article class="diff-card">
-          <h3>Prefill-only retrieval</h3>
+          <h3>Decode-free retrieval</h3>
           <p>Search does not generate tool calls, reasoning traces, or answers token by token. The query runs as a prefill over restored memory state, and the ranking comes back directly.</p>
         </article>
         <article class="diff-card">
@@ -764,6 +855,10 @@
     </section>
 
     <section class="section explorer-preview" id="explorer-preview">
+      <div class="section-heading">
+        <p class="eyebrow">Interactive Explorer</p>
+        <h2><span class="title-line">Table understanding and</span><span class="title-line">reasoning, made visible.</span></h2>
+      </div>
       <div class="preview-media">
         <div class="preview-frame-wrap">
           <div class="preview-slideshow" aria-label="Attemory explorer screenshots">
@@ -772,21 +867,15 @@
             <img class="carousel-slide slide-3" src="temporal-reasoning.png" alt="Attemory temporal reasoning retrieval example">
           </div>
         </div>
-        <ul class="preview-points">
-          <li>Short examples are used here so the retrieval path is easy to inspect.</li>
-          <li>The same engine is benchmarked on million-token memory and multi-million-token codebases, including repos approaching 10M indexed tokens.</li>
-        </ul>
       </div>
       <div class="preview-copy">
-        <p class="eyebrow">Interactive Explorer</p>
-        <h2>Reasoning and table understanding, made visible.</h2>
         <p class="section-copy">
           The explorer visualizes real Attemory search runs over a diary, a
           table, and an incident timeline. It shows how query context can shift
           retrieval, how a table cell can be found from row and column context,
           and how an incident query can trace a symptom back to a root cause.
         </p>
-        <a class="button" href="explorer/">Open explorer</a>
+        <a class="button" href="explorer/">Interactive Examples</a>
       </div>
     </section>
 
@@ -854,8 +943,8 @@
 
     <section class="section">
       <div class="section-heading">
-        <p class="eyebrow">Retrieval Quality</p>
-        <h2>Benchmark-backed results across memory and code.</h2>
+        <p class="eyebrow">SOTA Retrieval Quality</p>
+        <h2><span class="title-line">Benchmark-backed results</span><span class="title-line">across memory and code.</span></h2>
         <p class="section-copy">
           High recall is what makes token savings usable. Attemory reaches
           SOTA-class results across long conversations, million-token memory,
@@ -944,20 +1033,34 @@
 
     <section class="section" id="get-started">
       <div class="section-heading">
-        <p class="eyebrow">Two Ways To Use It</p>
-        <h2>Use the engine directly, or start with repository search.</h2>
+        <p class="eyebrow">Use Attemory Your Way</p>
+        <h2><span class="title-line">Use the engine directly, or</span><span class="title-line">start with repository search.</span></h2>
       </div>
+      <article class="install-card">
+        <h3>Install Attemory</h3>
+        <p>Choose the runtime for your machine. The same targets work with <code>pip</code>; CUDA 12.6 is the default Linux CUDA wheel index.</p>
+        <pre class="code-block"># macOS Apple Silicon, includes Metal runtime
+uv pip install attemory
+
+# Linux CPU
+uv pip install "attemory[cpu]"
+
+# Linux CUDA
+uv pip install "attemory[cuda]" \
+  --extra-index-url https://attemorysystem.github.io/attemory/whl/cu126/</pre>
+        <a class="details-link" href="https://github.com/AttemorySystem/attemory#install">Install docs</a>
+      </article>
       <div class="use-grid">
         <article class="use-card">
-          <h3>Retrieval engine</h3>
+          <h3>Retrieval Engine</h3>
           <p>Use Python or HTTP APIs for long memory, documents, benchmark adapters, and custom applications.</p>
-          <pre class="code-block">pip install attemory
-attemory-server --small --backend gpu --port 9006
+          <pre class="code-block">attemory-server --small --backend gpu --port 9006
 
 python - &lt;&lt;'PY'
 from attemory import AttemoryClient
 client = AttemoryClient(port=9006)
-print(client.health())
+client.add_memory("The deploy freeze starts at 18:00 UTC.")
+print(client.search("When does the deploy freeze start?"))
 PY</pre>
           <a class="details-link" href="https://github.com/AttemorySystem/attemory/blob/main/doc/usage.md">Docs for details</a>
         </article>
@@ -965,11 +1068,12 @@ PY</pre>
           <h3>Repository Search</h3>
           <p>Index a codebase once, reuse the saved session across many questions, and return file/range evidence from the CLI or Claude Code plugin.</p>
 <pre class="code-block"># CLI usage
-attemory code init
-attemory code index
-attemory code search "where is session restore implemented"
+atcode init
+atcode index
+atcode search "where is session restore implemented"
 
 # Claude Code plugin
+claude plugin marketplace add AttemorySystem/attemory-claude-code
 claude plugin install attemory-code@attemory
 claude -p "Use attemory-code search to find where session restore is implemented. Explain the control flow and key files in detail."</pre>
           <a class="details-link" href="https://github.com/AttemorySystem/attemory/blob/main/doc/repository-search.md">Docs for details</a>
