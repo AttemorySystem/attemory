@@ -2,7 +2,7 @@
 #include "context/session/segment_planner.h"
 #include "context/storage/storage_layout.h"
 #include "persistent/persistent.h"
-#include "tests/test_support.h"
+#include "test_support.h"
 
 #include <filesystem>
 #include <fstream>

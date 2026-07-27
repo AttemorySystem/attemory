@@ -1,7 +1,7 @@
 #include "server/request_parser.h"
 
 #include "context/command/command_result.h"
-#include "tests/test_support.h"
+#include "test_support.h"
 
 #include <cstddef>
 #include <cstdint>

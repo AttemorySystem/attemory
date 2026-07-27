@@ -3,7 +3,7 @@
 #include "context/command/command_result.h"
 #include "context/context.h"
 #include "nlohmann/json.hpp"
-#include "tests/test_support.h"
+#include "test_support.h"
 
 #include <cstdint>
 #include <string>

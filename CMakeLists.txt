@@ -237,7 +237,7 @@ function(attemory_add_cpp_test target)
 
     add_executable(${target} ${TEST_SOURCES})
     target_include_directories(${target} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${ATMCORE_INCLUDE_DIR}
     )

@@ -2,7 +2,7 @@
 #include "nlohmann/json.hpp"
 #include "server/http_common.h"
 #include "server/request_parser.h"
-#include "tests/test_support.h"
+#include "test_support.h"
 
 #include <string>
 

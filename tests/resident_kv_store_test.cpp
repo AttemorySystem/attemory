@@ -1,7 +1,7 @@
 #include "context/kv/resident_kv_store.h"
 #include "context/kv/segment_kv_manager.h"
 
-#include "tests/test_support.h"
+#include "test_support.h"
 
 #include <cstdint>
 #include <string>
