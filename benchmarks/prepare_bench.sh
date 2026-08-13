@@ -13,9 +13,9 @@ Usage:
   ./prepare_bench.sh longmemeval locomo semble sweqa
   ./prepare_bench.sh all
 
-This downloads the pinned upstream benchmark repos and applies the Attemory
-adapter patches. The command is safe to run again: existing checkouts are reused
-and already-applied patches are skipped.
+This downloads the pinned upstream benchmark repos and applies Attemory adapter
+patches where needed. The command is safe to run again: existing checkouts are
+reused and already-applied patches are skipped.
 EOF
 }
 

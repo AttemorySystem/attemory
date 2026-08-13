@@ -1,60 +1,700 @@
 diff --git a/benchmarks/baselines/attemory.py b/benchmarks/baselines/attemory.py
 new file mode 100644
-index 0000000..69eabcd
+index 0000000..7e021fc
 --- /dev/null
 +++ b/benchmarks/baselines/attemory.py
-@@ -0,0 +1,900 @@
+@@ -0,0 +1,653 @@
 +from __future__ import annotations
 +
 +import argparse
 +import json
 +import math
 +import os
++import statistics
 +import sys
 +import time
++from collections import defaultdict
 +from dataclasses import asdict, dataclass
 +from pathlib import Path
 +from typing import Any
 +
-+from benchmarks.data import (
-+    ANNOTATIONS_DIR,
-+    RepoSpec,
-+    Target,
-+    Task,
-+    add_filter_args,
-+    apply_task_filters,
-+    grouped_tasks,
-+    infer_category,
-+    load_filtered_tasks,
-+    load_repo_specs,
-+    path_matches,
-+    results_path,
++from benchmarks.baselines.attemory_common import (
++    DEFAULT_INDEX_MANIFEST,
++    DEFAULT_BASELINE_RESULTS,
++    DEFAULT_RESULTS,
++    DEFAULT_SEMBLE_ROOT,
++    QUERY_CONTEXT_PROMPT,
++    RERANK_SYSTEM_PROMPT,
++    file_rank,
++    import_attemory,
++    load_semble_data,
++    ndcg_at_k,
++    selected_repos,
++    verify_repo_revision,
++    write_json_atomic,
 +)
 +
 +
-+def _import_attemory() -> type:
++DEFAULT_TOP_K = 10
++DEFAULT_SEARCH_TOP_K = 20
++FILE_HEADER_PREFIX = "// the following code come from "
++
++
++@dataclass(frozen=True)
++class IndexInfo:
++    root: Path
++    session_id: str
++    file_count: int
++    chunk_count: int
++    token_count: int
++    segment_count: int
++    memory_map: dict[str, Any]
++
++
++@dataclass(frozen=True)
++class RepoResult:
++    repo: str
++    language: str
++    queries: int
++    ndcg10: float
++    p50_ms: float
++    files: int
++    chunks: int
++    tokens: int
++    segments: int
++    index_ms: float
++    multisegment_queries: int
++    oneshot_passes: int
++    by_category: dict[str, float]
++
++
++@dataclass(frozen=True)
++class SearchOutcome:
++    files: list[str]
++    raw_segment_count: int
++    oneshot_passes: int
++
++
++def load_index(root: Path) -> IndexInfo:
++    import_attemory()
++    from attemory.code.project import (
++        CONTEXT_STRUCTURE,
++        chunks_path,
++        index_path,
++        load_chunks,
++        load_config,
++        load_index as load_index_metadata,
++    )
++
++    if not index_path(root).is_file() or not chunks_path(root).is_file():
++        raise RuntimeError(
++            f"{root}: no attemory code index; run "
++            "python -m benchmarks.baselines.attemory_index"
++        )
++    config = load_config(root)
++    metadata = load_index_metadata(root)
++    memory_map = load_chunks(chunks_path(root))
++    if metadata.get("context_structure") != CONTEXT_STRUCTURE:
++        raise RuntimeError(f"{root}: unsupported context structure")
++    if metadata.get("session_id") != config.session_id:
++        raise RuntimeError(f"{root}: config and index session ids differ")
++    if Path(str(metadata.get("repo_root", ""))).resolve() != root.resolve():
++        raise RuntimeError(f"{root}: index metadata points at another repository root")
++    if metadata.get("system_prompt") != (
++        "Read the following code carefully and find the most relevant code to the query."
++    ):
++        raise RuntimeError(f"{root}: index system prompt does not match repository search")
++    if int(metadata.get("chunk_count", -1)) != len(memory_map):
++        raise RuntimeError(f"{root}: chunk metadata count mismatch")
++    if int(metadata.get("memory_count", -1)) != int(metadata["file_count"]) + len(
++        memory_map
++    ):
++        raise RuntimeError(f"{root}: file-header and chunk memory count mismatch")
++    return IndexInfo(
++        root=root,
++        session_id=config.session_id,
++        file_count=int(metadata["file_count"]),
++        chunk_count=len(memory_map),
++        token_count=int(metadata["token_count"]),
++        segment_count=int(metadata["segment_count"]),
++        memory_map=memory_map,
++    )
++
++
++def ordered_chunk_ids(results: list[Any], memory_map: dict[str, Any]) -> list[str]:
++    ordered: list[str] = []
++    seen: set[str] = set()
++    for result in results:
++        memory_id = getattr(result, "id", None)
++        if (
++            isinstance(memory_id, str)
++            and memory_id in memory_map
++            and memory_id not in seen
++        ):
++            seen.add(memory_id)
++            ordered.append(memory_id)
++    return ordered
++
++
++def result_segments(results: list[Any]) -> set[int]:
++    return {
++        segment_id
++        for result in results
++        if isinstance((segment_id := getattr(result, "segment_id", None)), int)
++    }
++
++
++def memories_from_index_order(
++    results: list[Any],
++    memory_map: dict[str, Any],
++) -> list[dict[str, str]]:
++    text_by_id: dict[str, str] = {}
++    for result in results:
++        memory_id = getattr(result, "id", None)
++        text = getattr(result, "text", "") or ""
++        if (
++            isinstance(memory_id, str)
++            and memory_id in memory_map
++            and text
++            and memory_id not in text_by_id
++        ):
++            text_by_id[memory_id] = text
++
++    memories: list[dict[str, str]] = []
++    current_file: str | None = None
++    for memory_id, record in memory_map.items():
++        text = text_by_id.get(memory_id)
++        if text is None:
++            continue
++        if record.file != current_file:
++            memories.append({"text": FILE_HEADER_PREFIX + record.file})
++            current_file = record.file
++        memories.append({"id": memory_id, "text": text})
++    return memories
++
++
++def rerank(
++    *,
++    client: Any,
++    query: str,
++    query_context: str,
++    results: list[Any],
++    ordered_ids: list[str],
++    memory_map: dict[str, Any],
++    search_top_k: int,
++) -> tuple[list[str], int]:
++    current = results
++    pass_count = 0
++    for _ in range(8):
++        if len(result_segments(current)) <= 1:
++            break
++        memories = memories_from_index_order(current, memory_map)
++        if not memories:
++            break
++        header_count = sum(1 for memory in memories if "id" not in memory)
++        current = client.oneshot_search(
++            query,
++            memories,
++            system=RERANK_SYSTEM_PROMPT,
++            query_context=query_context,
++            top_k=min(len(memories), header_count + search_top_k),
++        )
++        pass_count += 1
++        reranked_ids = ordered_chunk_ids(current, memory_map)
++        if reranked_ids:
++            seen = set(reranked_ids)
++            ordered_ids = reranked_ids + [
++                memory_id for memory_id in ordered_ids if memory_id not in seen
++            ]
++    return ordered_ids, pass_count
++
++
++def file_ranking(
++    ordered_ids: list[str],
++    *,
++    index: IndexInfo,
++    search_top_k: int,
++    top_k: int,
++    aggregation: str,
++) -> list[str]:
++    hits: list[str] = []
++    for memory_id in ordered_ids:
++        record = index.memory_map.get(memory_id)
++        if record is None:
++            continue
++        hits.append(record.file)
++        if len(hits) >= search_top_k:
++            break
++
++    scores: dict[str, float] = {}
++    first_rank: dict[str, int] = {}
++    hit_counts: dict[str, int] = {}
++    for rank, file_path in enumerate(hits, 1):
++        count = hit_counts.get(file_path, 0)
++        if aggregation == "first" and count:
++            continue
++        if aggregation == "capped" and count >= 2:
++            continue
++        weight = 0.25 if aggregation == "capped" and count else 1.0
++        scores[file_path] = scores.get(file_path, 0.0) + weight / math.log2(
++            rank + 1
++        )
++        first_rank.setdefault(file_path, rank)
++        hit_counts[file_path] = count + 1
++    return sorted(
++        scores,
++        key=lambda path: (-scores[path], first_rank[path], path),
++    )[:top_k]
++
++
++def search_repo(
++    question: str,
++    *,
++    index: IndexInfo,
++    client: Any,
++    search_top_k: int,
++    top_k: int,
++    aggregation: str,
++    oneshot_rerank: bool,
++) -> SearchOutcome:
++    query = f"Query: {question}"
++    query_context = QUERY_CONTEXT_PROMPT.format(question=question)
++    results = client.search(
++        query,
++        session_id=index.session_id,
++        query_context=query_context,
++        top_k=search_top_k,
++    )
++    ordered_ids = ordered_chunk_ids(results, index.memory_map)
++    raw_segment_count = len(result_segments(results))
++    oneshot_passes = 0
++    if oneshot_rerank and raw_segment_count > 1:
++        ordered_ids, oneshot_passes = rerank(
++            client=client,
++            query=query,
++            query_context=query_context,
++            results=results,
++            ordered_ids=ordered_ids,
++            memory_map=index.memory_map,
++            search_top_k=search_top_k,
++        )
++    return SearchOutcome(
++        files=file_ranking(
++            ordered_ids,
++            index=index,
++            search_top_k=search_top_k,
++            top_k=top_k,
++            aggregation=aggregation,
++        ),
++        raw_segment_count=raw_segment_count,
++        oneshot_passes=oneshot_passes,
++    )
++
++
++def evaluate_repo(
++    tasks: list[Any],
++    *,
++    index: IndexInfo,
++    client: Any,
++    search_top_k: int,
++    top_k: int,
++    aggregation: str,
++    oneshot_rerank: bool,
++    latency_runs: int,
++    verbose: bool,
++) -> tuple[float, float, dict[str, float], int, int]:
++    client.restore_session(index.session_id)
++    scores: list[float] = []
++    latencies: list[float] = []
++    category_scores: dict[str, list[float]] = defaultdict(list)
++    multisegment_queries = 0
++    oneshot_passes = 0
++    for task in tasks:
++        file_paths: list[str] = []
++        query_latencies: list[float] = []
++        task_used_multiple_segments = False
++        for _ in range(latency_runs):
++            started = time.perf_counter()
++            outcome = search_repo(
++                task.query,
++                index=index,
++                client=client,
++                search_top_k=search_top_k,
++                top_k=top_k,
++                aggregation=aggregation,
++                oneshot_rerank=oneshot_rerank,
++            )
++            file_paths = outcome.files
++            if outcome.raw_segment_count > 1:
++                task_used_multiple_segments = True
++            oneshot_passes += outcome.oneshot_passes
++            query_latencies.append((time.perf_counter() - started) * 1000)
++            try:
++                client.clear_cache(index.session_id)
++            except Exception:
++                pass
++        if task_used_multiple_segments:
++            multisegment_queries += 1
++        relevant_ranks = [
++            rank
++            for target in task.all_relevant
++            if (rank := file_rank(file_paths, target.path)) is not None
++        ]
++        score = ndcg_at_k(relevant_ranks, len(task.all_relevant), top_k)
++        scores.append(score)
++        category_scores[task.category].append(score)
++        latencies.append(statistics.median(query_latencies))
++        if verbose:
++            print(
++                f"  ndcg@10={score:.3f} ranks={relevant_ranks} "
++                f"query={task.query!r}",
++                file=sys.stderr,
++            )
++            print(f"    top-5: {file_paths[:5]}", file=sys.stderr)
++    return (
++        sum(scores) / len(scores),
++        statistics.median(latencies),
++        {
++            category: sum(values) / len(values)
++            for category, values in sorted(category_scores.items())
++        },
++        multisegment_queries,
++        oneshot_passes,
++    )
++
++
++def load_index_manifest(path: Path) -> dict[str, Any]:
++    if not path.is_file():
++        raise RuntimeError(
++            f"index manifest not found: {path}; "
++            "run python -m benchmarks.baselines.attemory_index first"
++        )
++    value = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(value, dict) or not isinstance(value.get("repos"), dict):
++        raise RuntimeError(f"invalid index manifest: {path}")
++    return value
++
++
++def validate_manifest_entry(
++    *,
++    repo: str,
++    spec: Any,
++    index: IndexInfo,
++    manifest: dict[str, Any],
++) -> dict[str, Any]:
++    entry = manifest["repos"].get(repo)
++    if not isinstance(entry, dict):
++        raise RuntimeError(f"{repo}: missing from the index manifest")
++    if entry.get("revision") != spec.revision:
++        raise RuntimeError(f"{repo}: index manifest revision mismatch")
++    if entry.get("session_id") != index.session_id:
++        raise RuntimeError(f"{repo}: index manifest session mismatch")
++    if int(entry.get("chunk_count", -1)) != index.chunk_count:
++        raise RuntimeError(f"{repo}: index manifest chunk count mismatch")
++    return entry
++
++
++def load_completed(
++    path: Path,
++    *,
++    run_config: dict[str, Any],
++) -> dict[str, RepoResult]:
++    if not path.is_file():
++        return {}
 +    try:
-+        from attemory import AttemoryClient
++        value = json.loads(path.read_text(encoding="utf-8"))
++        if value.get("run_config") != run_config:
++            raise RuntimeError(
++                f"{path}: existing results use different benchmark parameters"
++            )
++        return {
++            item["repo"]: RepoResult(
++                repo=item["repo"],
++                language=item["language"],
++                queries=int(item["queries"]),
++                ndcg10=float(item["ndcg10"]),
++                p50_ms=float(item["p50_ms"]),
++                files=int(item["files"]),
++                chunks=int(item["chunks"]),
++                tokens=int(item["tokens"]),
++                segments=int(item["segments"]),
++                index_ms=float(item.get("index_ms", 0.0)),
++                multisegment_queries=int(item.get("multisegment_queries", 0)),
++                oneshot_passes=int(item.get("oneshot_passes", 0)),
++                by_category={
++                    key: float(score)
++                    for key, score in item.get("by_category", {}).items()
++                },
++            )
++            for item in value.get("repos", [])
++        }
++    except RuntimeError:
++        raise
++    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
++        return {}
 +
-+        return AttemoryClient
-+    except ModuleNotFoundError:
-+        root_value = os.environ.get("ATTEMORY_ROOT", "~/work/memory/attemory")
-+        python_root = Path(root_value).expanduser() / "python"
-+        if python_root.is_dir() and str(python_root) not in sys.path:
-+            sys.path.insert(0, str(python_root))
-+        from attemory import AttemoryClient
 +
-+        return AttemoryClient
++def load_baseline(path: Path) -> dict[str, float]:
++    if not path.is_file():
++        return {}
++    value = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(value, dict):
++        return {}
++    return {
++        item["repo"]: float(item["ndcg10"])
++        for item in value.get("repos", [])
++        if isinstance(item, dict) and "repo" in item and "ndcg10" in item
++    }
 +
 +
-+AttemoryClient = _import_attemory()
++def summary(
++    results: list[RepoResult],
++    *,
++    run_config: dict[str, Any],
++    baseline: dict[str, float],
++) -> dict[str, Any]:
++    category_values: dict[str, list[float]] = defaultdict(list)
++    language_results: dict[str, list[RepoResult]] = defaultdict(list)
++    for result in results:
++        language_results[result.language].append(result)
++        for category, score in result.by_category.items():
++            category_values[category].append(score)
++    payload: dict[str, Any] = {
++        "tool": "attemory-code",
++        "run_config": run_config,
++        "repos": [asdict(result) for result in sorted(results, key=lambda item: item.repo)],
++        "repo_count": len(results),
++        "query_count": sum(item.queries for item in results),
++        "avg_ndcg10": round(sum(item.ndcg10 for item in results) / len(results), 4),
++        "avg_p50_ms": round(sum(item.p50_ms for item in results) / len(results), 1),
++        "avg_index_ms": round(sum(item.index_ms for item in results) / len(results), 1),
++        "multisegment_queries": sum(
++            item.multisegment_queries for item in results
++        ),
++        "oneshot_passes": sum(item.oneshot_passes for item in results),
++        "by_language": {
++            language: {
++                "repos": len(items),
++                "queries": sum(item.queries for item in items),
++                "ndcg10": round(
++                    sum(item.ndcg10 for item in items) / len(items), 4
++                ),
++            }
++            for language, items in sorted(language_results.items())
++        },
++        "by_category": {
++            category: round(sum(values) / len(values), 4)
++            for category, values in sorted(category_values.items())
++        },
++    }
++    comparable = [item for item in results if item.repo in baseline]
++    if comparable:
++        baseline_avg = sum(baseline[item.repo] for item in comparable) / len(
++            comparable
++        )
++        current_avg = sum(item.ndcg10 for item in comparable) / len(comparable)
++        payload["baseline_comparison"] = {
++            "repos": len(comparable),
++            "baseline_avg_ndcg10": round(baseline_avg, 4),
++            "current_avg_ndcg10": round(current_avg, 4),
++            "delta_ndcg10": round(current_avg - baseline_avg, 4),
++            "per_repo_delta": {
++                item.repo: round(item.ndcg10 - baseline[item.repo], 4)
++                for item in sorted(comparable, key=lambda value: value.repo)
++            },
++        }
++    return payload
 +
 +
-+SEARCH_SYSTEM_PROMPT = "Read the following code carefully and find the most relevant code to the query."
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(
++        description="Evaluate prebuilt attemory code indexes on Semble."
++    )
++    parser.add_argument("--semble-root", type=Path, default=DEFAULT_SEMBLE_ROOT)
++    parser.add_argument("--repo", action="append", default=[])
++    parser.add_argument("--language", action="append", default=[])
++    parser.add_argument("--host", default=os.environ.get("ATTEMORY_HOST", "127.0.0.1"))
++    parser.add_argument(
++        "--port",
++        type=int,
++        default=int(os.environ.get("ATTEMORY_PORT", "9006")),
++    )
++    parser.add_argument(
++        "--timeout",
++        type=float,
++        default=float(os.environ.get("ATTEMORY_TIMEOUT", "3600")),
++    )
++    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
++    parser.add_argument("--search-top-k", type=int, default=DEFAULT_SEARCH_TOP_K)
++    parser.add_argument("--latency-runs", type=int, default=1)
++    parser.add_argument(
++        "--file-aggregation",
++        choices=("sum", "capped", "first"),
++        default="sum",
++    )
++    parser.add_argument(
++        "--no-oneshot-rerank",
++        dest="oneshot_rerank",
++        action="store_false",
++        default=True,
++    )
++    parser.add_argument("--index-manifest", type=Path, default=DEFAULT_INDEX_MANIFEST)
++    parser.add_argument(
++        "--baseline-results",
++        type=Path,
++        default=DEFAULT_BASELINE_RESULTS,
++    )
++    parser.add_argument("--output", type=Path, default=DEFAULT_RESULTS)
++    parser.add_argument("--verbose", action="store_true")
++    return parser.parse_args()
++
++
++def main() -> int:
++    args = parse_args()
++    if args.top_k <= 0 or args.search_top_k <= 0 or args.latency_runs <= 0:
++        raise RuntimeError("top-k and latency values must be positive")
++
++    import_attemory()
++    from attemory import AttemoryClient
++
++    data = load_semble_data(args.semble_root)
++    specs, repo_tasks = selected_repos(
++        data,
++        repos=args.repo or None,
++        languages=args.language or None,
++    )
++    output = args.output.expanduser()
++    index_manifest = load_index_manifest(args.index_manifest.expanduser())
++    run_config = {
++        "top_k": args.top_k,
++        "search_top_k": args.search_top_k,
++        "latency_runs": args.latency_runs,
++        "file_aggregation": args.file_aggregation,
++        "oneshot_rerank": args.oneshot_rerank,
++        "index_profile": index_manifest.get("profile", "unknown"),
++        "attemory_version": index_manifest.get("attemory_version", "unknown"),
++        "attemory_git_commit": index_manifest.get(
++            "attemory_git_commit", "unknown"
++        ),
++        "attemory_git_dirty": bool(
++            index_manifest.get("attemory_git_dirty", False)
++        ),
++    }
++    completed = load_completed(output, run_config=run_config)
++    baseline = load_baseline(args.baseline_results.expanduser())
++    results = [result for repo, result in completed.items() if repo in repo_tasks]
++    client = AttemoryClient(host=args.host, port=args.port, timeout=args.timeout)
++
++    for repo, tasks in sorted(repo_tasks.items()):
++        if repo in completed:
++            print(f"{repo}: reused completed result", file=sys.stderr)
++            continue
++        spec = specs[repo]
++        verify_repo_revision(spec)
++        index = load_index(spec.benchmark_dir.resolve())
++        manifest_entry = validate_manifest_entry(
++            repo=repo,
++            spec=spec,
++            index=index,
++            manifest=index_manifest,
++        )
++        (
++            ndcg10,
++            p50_ms,
++            by_category,
++            multisegment_queries,
++            oneshot_passes,
++        ) = evaluate_repo(
++            tasks,
++            index=index,
++            client=client,
++            search_top_k=args.search_top_k,
++            top_k=args.top_k,
++            aggregation=args.file_aggregation,
++            oneshot_rerank=args.oneshot_rerank,
++            latency_runs=args.latency_runs,
++            verbose=args.verbose,
++        )
++        result = RepoResult(
++            repo=repo,
++            language=spec.language,
++            queries=len(tasks),
++            ndcg10=ndcg10,
++            p50_ms=p50_ms,
++            files=index.file_count,
++            chunks=index.chunk_count,
++            tokens=index.token_count,
++            segments=index.segment_count,
++            index_ms=float(manifest_entry.get("index_ms", 0.0)),
++            multisegment_queries=multisegment_queries,
++            oneshot_passes=oneshot_passes,
++            by_category=by_category,
++        )
++        results.append(result)
++        write_json_atomic(
++            output,
++            summary(results, run_config=run_config, baseline=baseline),
++        )
++        print(
++            f"{repo}: chunks={index.chunk_count} segments={index.segment_count} "
++            f"ndcg@10={ndcg10:.4f} p50_ms={p50_ms:.1f} "
++            f"multisegment_queries={multisegment_queries} "
++            f"oneshot_passes={oneshot_passes}",
++            file=sys.stderr,
++        )
++
++    if results:
++        payload = summary(
++            results,
++            run_config=run_config,
++            baseline=baseline,
++        )
++        write_json_atomic(output, payload)
++        print(json.dumps(payload, ensure_ascii=False, indent=2))
++        print(f"results saved to {output}", file=sys.stderr)
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/benchmarks/baselines/attemory_common.py b/benchmarks/baselines/attemory_common.py
+new file mode 100644
+index 0000000..8b70918
+--- /dev/null
++++ b/benchmarks/baselines/attemory_common.py
+@@ -0,0 +1,241 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++import math
++import os
++import sys
++from pathlib import Path
++from types import ModuleType
++from typing import Any, Iterable, Mapping
++
++
++DEFAULT_SEMBLE_ROOT = Path(__file__).resolve().parents[2]
++ATTEMORY_ROOT = Path(
++    os.environ.get("ATTEMORY_ROOT", DEFAULT_SEMBLE_ROOT.parents[1])
++).expanduser().resolve()
++DEFAULT_INDEX_MANIFEST = (
++    Path.home() / ".cache" / "attemory-semble-atcode" / "index-manifest.json"
++)
++DEFAULT_RESULTS = DEFAULT_SEMBLE_ROOT / "output" / "attemory-code.json"
++DEFAULT_BASELINE_RESULTS = (
++    ATTEMORY_ROOT / "benchmarks" / "results" / "semble" / "attemory.json"
++)
++
++SEARCH_SYSTEM_PROMPT = (
++    "Read the following code carefully and find the most relevant code to the query."
++)
 +RERANK_SYSTEM_PROMPT = (
 +    "Rank the selected code snippets by how directly they answer the query. Prefer snippets "
 +    "that contain the requested source implementation or definition. Prefer production source "
-+    "over tests, examples, documentation, and generated files unless the query explicitly asks for them."
++    "over tests, examples, documentation, and generated files unless the query explicitly asks "
++    "for them."
 +)
 +QUERY_CONTEXT_PROMPT = (
 +    "Read the selected code snippets carefully and answer the user's query: {question}. "
@@ -65,7 +705,11 @@ index 0000000..69eabcd
 +    "documentation, and generated files unless the query explicitly asks for them."
 +)
 +
-+DEFAULT_CODE_SUFFIXES = {
++# This is the source-file scope used by the published Attemory/Semble run. The
++# new benchmark keeps that scope so the result isolates attemory code's chunking,
++# segment planning, persistence, and metadata rather than adding documentation
++# and configuration files at the same time.
++SEMBLE_CODE_SUFFIXES = {
 +    ".bash",
 +    ".c",
 +    ".cc",
@@ -112,95 +756,131 @@ index 0000000..69eabcd
 +    ".vue",
 +    ".zig",
 +}
-+SPECIAL_CODE_FILENAMES = {"CMakeLists.txt"}
-+SKIP_DIRS = {
-+    ".git",
-+    ".hg",
-+    ".mypy_cache",
-+    ".pytest_cache",
-+    ".ruff_cache",
-+    ".svn",
-+    ".tox",
-+    ".venv",
-+    "__pycache__",
-+    "build",
-+    "dist",
-+    "node_modules",
-+    "venv",
-+}
-+
-+INDEX_FILE = "index.json"
-+MAP_FILE = "chunks.jsonl"
-+FILE_HEADER_PREFIX = "// the following code come from "
-+TARGET_LINES_PER_BLOCK = 30
-+BLANK_LINE_SEARCH_WINDOW = 10
-+FILE_MIN_REMAINING_TOKENS = 5000
-+DEFAULT_TOP_K = 10
-+DEFAULT_SEARCH_TOPK = 50
-+DEFAULT_LATENCY_RUNS = 1
-+DEFAULT_INDEX_ROOT = Path.home() / ".cache" / "attemory-semble"
-+FILE_AGGREGATION_MODE = "sum"
-+FILE_AGGREGATION_MAX_HITS = 2
-+FILE_AGGREGATION_EXTRA_WEIGHT = 0.25
++SEMBLE_SPECIAL_FILENAMES = {"CMakeLists.txt"}
 +
 +
-+@dataclass(frozen=True)
-+class CodeChunk:
-+    id: str
-+    file: str
-+    start_line: int
-+    end_line: int
-+    text: str
-+
-+    @property
-+    def lines(self) -> str:
-+        return f"{self.start_line}-{self.end_line}"
-+
-+    @property
-+    def memory_text(self) -> str:
-+        return self.text
++def compatible_include_patterns() -> list[str]:
++    patterns = [
++        pattern
++        for suffix in sorted(SEMBLE_CODE_SUFFIXES)
++        for pattern in (f"*{suffix}", f"**/*{suffix}")
++    ]
++    patterns.extend(sorted(SEMBLE_SPECIAL_FILENAMES))
++    patterns.extend(f"**/{name}" for name in sorted(SEMBLE_SPECIAL_FILENAMES))
++    return patterns
 +
 +
-+@dataclass(frozen=True)
-+class ChunkLocation:
-+    file: str
-+    lines: str
++def import_attemory() -> None:
++    try:
++        import attemory  # noqa: F401
++    except ModuleNotFoundError:
++        python_root = ATTEMORY_ROOT / "python"
++        if str(python_root) not in sys.path:
++            sys.path.insert(0, str(python_root))
++        import attemory  # noqa: F401
 +
 +
-+@dataclass(frozen=True)
-+class IndexResult:
-+    index_dir: Path
-+    session_id: str
-+    repo_root: Path
-+    index_ms: float
-+    memory_count: int
-+    reused: bool
-+    memory_map: dict[str, ChunkLocation]
++def load_semble_data(semble_root: Path) -> ModuleType:
++    data_path = semble_root.resolve() / "benchmarks" / "data.py"
++    if not data_path.is_file():
++        raise RuntimeError(
++            f"Semble benchmark checkout not found at {semble_root}; "
++            "run `cd benchmarks && ./prepare_bench.sh semble` from Attemory"
++        )
++    module_name = "_attemory_semble_upstream_data"
++    spec = importlib.util.spec_from_file_location(module_name, data_path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load Semble benchmark data module: {data_path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
 +
 +
-+@dataclass(frozen=True)
-+class RepoResult:
-+    repo: str
-+    language: str
-+    ndcg10: float
-+    p50_ms: float
-+    index_ms: float
-+    memories: int
++def selected_repos(
++    data: ModuleType,
++    *,
++    repos: Iterable[str] | None,
++    languages: Iterable[str] | None,
++) -> tuple[dict[str, Any], dict[str, list[Any]]]:
++    repo_filter = set(repos or ())
++    language_filter = set(languages or ())
++    specs = data.available_repo_specs()
++    tasks = data.load_tasks(repo_specs=specs)
++    tasks = [
++        task
++        for task in tasks
++        if (not repo_filter or task.repo in repo_filter)
++        and (not language_filter or task.language in language_filter)
++    ]
++    if not tasks:
++        raise RuntimeError("no Semble tasks matched the requested filters")
++    grouped = data.grouped_tasks(tasks)
++    return {repo: specs[repo] for repo in grouped}, grouped
 +
 +
-+def _dcg(relevances: list[int]) -> float:
-+    return sum(rel / math.log2(index + 2) for index, rel in enumerate(relevances))
++def git_head(path: Path) -> str:
++    import subprocess
++
++    result = subprocess.run(
++        ["git", "-C", str(path), "rev-parse", "HEAD"],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    return result.stdout.strip()
 +
 +
-+def ndcg_at_k(relevant_ranks: list[int], n_relevant: int, k: int) -> float:
-+    if n_relevant == 0:
-+        return 0.0
-+    relevances = [0] * k
-+    for rank in relevant_ranks:
-+        if 1 <= rank <= k:
-+            relevances[rank - 1] = 1
-+    ideal = _dcg([1] * min(k, n_relevant))
-+    return _dcg(relevances) / ideal if ideal > 0 else 0.0
++def git_dirty(path: Path) -> bool:
++    import subprocess
++
++    result = subprocess.run(
++        ["git", "-C", str(path), "status", "--porcelain"],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    return bool(result.stdout.strip())
++
++
++def verify_repo_revision(spec: Any) -> None:
++    actual = git_head(spec.checkout_dir)
++    if actual != spec.revision:
++        raise RuntimeError(
++            f"{spec.name}: checkout revision is {actual}, expected {spec.revision}; "
++            "run the Semble repo sync/check command"
++        )
++
++
++def session_id(repo: str, revision: str) -> str:
++    return f"attemory-semble-atcode-{repo}-{revision[:12]}"
++
++
++def read_json(path: Path) -> dict[str, Any]:
++    value = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(value, dict):
++        raise ValueError(f"expected a JSON object: {path}")
++    return value
++
++
++def write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_name(path.name + ".tmp")
++    temporary.write_text(
++        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++    temporary.replace(path)
++
++
++def path_matches(file_path: str, target_path: str) -> bool:
++    normalized_file = file_path.replace("\\", "/")
++    normalized_target = target_path.replace("\\", "/")
++    return (
++        normalized_file == normalized_target
++        or normalized_file.endswith(f"/{normalized_target}")
++        or normalized_target.endswith(f"/{normalized_file}")
++    )
 +
 +
 +def file_rank(file_paths: list[str], target_path: str) -> int | None:
@@ -210,697 +890,460 @@ index 0000000..69eabcd
 +    return None
 +
 +
-+def _session_id(repo: str) -> str:
-+    return f"attemory-semble-{repo}"
-+
-+
-+def _file_header(file_path: str) -> str:
-+    return f"{FILE_HEADER_PREFIX}{file_path}"
-+
-+
-+def _read_text(path: Path) -> str:
-+    return path.read_text(encoding="utf-8", errors="replace")
-+
-+
-+def _list_code_files(repo_root: Path) -> list[Path]:
-+    files: list[Path] = []
-+    for root, dirnames, filenames in os.walk(repo_root):
-+        dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in SKIP_DIRS)
-+        root_path = Path(root)
-+        for filename in sorted(filenames):
-+            path = root_path / filename
-+            if path.suffix.lower() in DEFAULT_CODE_SUFFIXES or path.name in SPECIAL_CODE_FILENAMES:
-+                files.append(path)
-+    return sorted(files, key=lambda path: path.relative_to(repo_root).as_posix())
-+
-+
-+def _build_chunks(repo_root: Path) -> tuple[list[CodeChunk], int, int]:
-+    chunks: list[CodeChunk] = []
-+    total_lines = 0
-+    code_files = _list_code_files(repo_root)
-+    for path in code_files:
-+        rel_path = path.relative_to(repo_root).as_posix()
-+        lines = _read_text(path).splitlines(keepends=True)
-+        if not lines:
-+            continue
-+        total_lines += len(lines)
-+        for start, end in _collect_line_blocks(lines):
-+            text = "".join(lines[start - 1 : end])
-+            if text.strip():
-+                chunks.append(
-+                    CodeChunk(
-+                        id=str(len(chunks)),
-+                        file=rel_path,
-+                        start_line=start,
-+                        end_line=end,
-+                        text=text,
-+                    )
-+                )
-+    return chunks, len(code_files), total_lines
-+
-+
-+def _collect_line_blocks(
-+    lines: list[str],
-+    *,
-+    target_lines: int = TARGET_LINES_PER_BLOCK,
-+    split_window: int = BLANK_LINE_SEARCH_WINDOW,
-+) -> list[tuple[int, int]]:
-+    total_lines = len(lines)
-+    if total_lines == 0:
-+        return []
-+
-+    blocks: list[tuple[int, int]] = []
-+    start = 1
-+    while start <= total_lines:
-+        preferred_end = min(start + target_lines - 1, total_lines)
-+        if preferred_end == total_lines:
-+            blocks.append((start, total_lines))
-+            break
-+
-+        search_start = max(start, preferred_end - split_window)
-+        search_end = min(total_lines, preferred_end + split_window)
-+        blank_candidates = [
-+            line_no
-+            for line_no in range(search_start, search_end + 1)
-+            if not lines[line_no - 1].strip()
-+        ]
-+        if blank_candidates:
-+            end = min(blank_candidates, key=lambda line_no: (abs(line_no - preferred_end), line_no))
-+        else:
-+            end = preferred_end
-+
-+        blocks.append((start, end))
-+        start = end + 1
-+
-+    return blocks
-+
-+
-+def _write_index_files(
-+    *,
-+    index_dir: Path,
-+    session_id: str,
-+    repo_root: Path,
-+    chunks: list[CodeChunk],
-+    file_count: int,
-+    line_count: int,
-+) -> dict[str, ChunkLocation]:
-+    index_dir.mkdir(parents=True, exist_ok=True)
-+    memory_map = {chunk.id: ChunkLocation(file=chunk.file, lines=chunk.lines) for chunk in chunks}
-+    with (index_dir / MAP_FILE).open("w", encoding="utf-8") as handle:
-+        for chunk in chunks:
-+            handle.write(
-+                json.dumps(
-+                    {
-+                        "id": chunk.id,
-+                        "file": chunk.file,
-+                        "lines": chunk.lines,
-+                    },
-+                    ensure_ascii=False,
-+                )
-+                + "\n"
-+            )
-+
-+    metadata = {
-+        "session_id": session_id,
-+        "repo_root": str(repo_root),
-+        "map_file": MAP_FILE,
-+        "memory_count": len(chunks),
-+        "file_count": file_count,
-+        "line_count": line_count,
-+        "system_prompt": SEARCH_SYSTEM_PROMPT,
-+    }
-+    (index_dir / INDEX_FILE).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-+    return memory_map
-+
-+
-+def _read_index_files(index_dir: Path) -> IndexResult | None:
-+    index_path = index_dir / INDEX_FILE
-+    map_path = index_dir / MAP_FILE
-+    if not index_path.exists() or not map_path.exists():
-+        return None
-+
-+    try:
-+        metadata = json.loads(index_path.read_text(encoding="utf-8"))
-+        session_id = str(metadata["session_id"])
-+        repo_root = Path(str(metadata["repo_root"]))
-+        memory_count = int(metadata["memory_count"])
-+        memory_map: dict[str, ChunkLocation] = {}
-+        with map_path.open("r", encoding="utf-8") as handle:
-+            for line in handle:
-+                if not line.strip():
-+                    continue
-+                item = json.loads(line)
-+                memory_map[str(item["id"])] = ChunkLocation(file=str(item["file"]), lines=str(item["lines"]))
-+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-+        print(f"Cannot reuse {index_dir}: invalid index files: {exc}", file=sys.stderr)
-+        return None
-+
-+    if len(memory_map) != memory_count:
-+        print(
-+            f"Cannot reuse {index_dir}: map has {len(memory_map)} memories, metadata says {memory_count}.",
-+            file=sys.stderr,
-+        )
-+        return None
-+
-+    return IndexResult(
-+        index_dir=index_dir,
-+        session_id=session_id,
-+        repo_root=repo_root,
-+        index_ms=0.0,
-+        memory_count=memory_count,
-+        reused=True,
-+        memory_map=memory_map,
++def ndcg_at_k(relevant_ranks: list[int], n_relevant: int, k: int) -> float:
++    if n_relevant == 0:
++        return 0.0
++    relevances = [0] * k
++    for rank in relevant_ranks:
++        if 1 <= rank <= k:
++            relevances[rank - 1] = 1
++    ideal_count = min(k, n_relevant)
++    ideal = sum(1.0 / math.log2(index + 2) for index in range(ideal_count))
++    actual = sum(
++        relevance / math.log2(index + 2)
++        for index, relevance in enumerate(relevances)
 +    )
++    return actual / ideal if ideal else 0.0
+diff --git a/benchmarks/baselines/attemory_index.py b/benchmarks/baselines/attemory_index.py
+new file mode 100644
+index 0000000..bd27af9
+--- /dev/null
++++ b/benchmarks/baselines/attemory_index.py
+@@ -0,0 +1,270 @@
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import subprocess
++import sys
++import time
++from dataclasses import replace
++from pathlib import Path
++from typing import Any
++
++from benchmarks.baselines.attemory_common import (
++    ATTEMORY_ROOT,
++    DEFAULT_INDEX_MANIFEST,
++    DEFAULT_SEMBLE_ROOT,
++    compatible_include_patterns,
++    git_dirty,
++    import_attemory,
++    load_semble_data,
++    selected_repos,
++    session_id,
++    git_head,
++    verify_repo_revision,
++    write_json_atomic,
++)
 +
 +
-+def _delete_session(client: Any, session_id: str) -> None:
-+    try:
-+        client.delete_session(session_id=session_id)
-+    except OSError:
-+        raise SystemExit(f"Could not connect to attemory at {client.host}:{client.port}; start the server first.")
-+    except Exception:
-+        pass
-+
-+
-+def _fresh_index(
++def build_config(
++    root: Path,
 +    *,
 +    repo: str,
-+    benchmark_dir: Path,
-+    index_root: Path,
-+    client: Any,
-+) -> IndexResult:
-+    session_id = _session_id(repo)
-+    index_dir = index_root / repo
-+    _delete_session(client, session_id)
++    revision: str,
++    host: str,
++    port: int,
++    profile: str,
++) -> Any:
++    import_attemory()
++    from attemory.code.project import default_config
 +
-+    started = time.perf_counter()
-+    chunks, file_count, line_count = _build_chunks(benchmark_dir)
-+    session_client = client.with_session(session_id)
-+    session_client.create_session()
-+    output = session_client.add_system(SEARCH_SYSTEM_PROMPT)
-+    remaining_tokens = output.remaining_tokens
-+    current_file: str | None = None
-+    for chunk in chunks:
-+        if chunk.file != current_file:
-+            if remaining_tokens < FILE_MIN_REMAINING_TOKENS:
-+                session_client.next_segment()
-+            output = session_client.add_memory(_file_header(chunk.file))
-+            remaining_tokens = output.remaining_tokens
-+            current_file = chunk.file
-+        output = session_client.add_memory(chunk.memory_text, id=chunk.id)
-+        remaining_tokens = output.remaining_tokens
-+    session_client.index_session()
-+    session_client.save_session()
-+    memory_map = _write_index_files(
-+        index_dir=index_dir,
-+        session_id=session_id,
-+        repo_root=benchmark_dir,
-+        chunks=chunks,
-+        file_count=file_count,
-+        line_count=line_count,
++    config = default_config(root, session_id(repo, revision))
++    config = replace(
++        config,
++        host=host,
++        port=port,
++        display_top_k=10,
++        candidate_chunk_top_k=20,
 +    )
-+    index_ms = (time.perf_counter() - started) * 1000
-+    return IndexResult(
-+        index_dir=index_dir,
-+        session_id=session_id,
-+        repo_root=benchmark_dir,
-+        index_ms=index_ms,
-+        memory_count=len(chunks),
-+        reused=False,
-+        memory_map=memory_map,
-+    )
++    if profile == "compatible":
++        config = replace(config, include_patterns=compatible_include_patterns())
++    return config
 +
 +
-+def _build_or_restore_index(
-+    *,
-+    repo: str,
-+    benchmark_dir: Path,
-+    index_root: Path,
-+    client: Any,
-+    reuse_index: bool,
-+) -> IndexResult:
-+    if reuse_index:
-+        cached = _read_index_files(index_root / repo)
-+        if cached is not None:
-+            return cached
-+        print(f"Reindexing {repo}: reusable index artifacts were not found.", file=sys.stderr)
-+    return _fresh_index(
-+        repo=repo,
-+        benchmark_dir=benchmark_dir,
-+        index_root=index_root,
-+        client=client,
-+    )
++def ensure_config(root: Path, expected: Any, *, allow_replace: bool) -> None:
++    import_attemory()
++    from attemory.code.project import config_path, load_config, write_config
 +
-+
-+def _search_repo(
-+    query: str,
-+    *,
-+    index: IndexResult,
-+    client: Any,
-+    search_topk: int,
-+    top_k: int,
-+    file_aggregation: str,
-+    oneshot_rerank: bool,
-+) -> list[str]:
-+    session_client = client.with_session(index.session_id)
-+
-+    formatted_query = "Query: " + query
-+    query_context = QUERY_CONTEXT_PROMPT.format(question=query)
-+
-+    # First search the persisted Attemory session. File headers may be returned,
-+    # but only chunk memories have ids, so only ids found in memory_map are used
-+    # for scoring.
-+    candidates = session_client.search(formatted_query, query_context=query_context, top_k = search_topk)
-+    ordered_ids = [result.id for result in candidates if isinstance(result.id, str) and result.id in index.memory_map]
-+
-+    candidate_segments = {
-+        result.segment_id
-+        for result in candidates
-+        if getattr(result, "segment_id", None) is not None
-+    }
-+
-+    # When results come from multiple segments, rebuild the same file-header +
-+    # chunk layout from just the returned chunks and ask oneshot_search to rank
-+    # them globally. This keeps the query-time template easy to inspect:
-+    #
-+    #   // the following code come from path/to/file
-+    #   returned chunk
-+    #   returned chunk
-+    #
-+    # Files with no returned chunk are omitted. Header memories intentionally
-+    # have no id and are filtered out before scoring.
-+    if oneshot_rerank and len(candidate_segments) > 1:
-+        current = candidates
-+        for _ in range(8):
-+            text_by_id: dict[str, str] = {}
-+            for result in current:
-+                if not isinstance(result.id, str) or result.id not in index.memory_map:
-+                    continue
-+                if result.id not in text_by_id and isinstance(result.text, str) and result.text:
-+                    text_by_id[result.id] = result.text
-+
-+            memories: list[dict[str, str]] = []
-+            current_file: str | None = None
-+            for chunk_id, location in index.memory_map.items():
-+                text = text_by_id.get(chunk_id)
-+                if text is None:
-+                    continue
-+                if location.file != current_file:
-+                    memories.append({"text": _file_header(location.file)})
-+                    current_file = location.file
-+                memories.append({"id": chunk_id, "text": text})
-+
-+            if not memories:
-+                break
-+
-+            non_id_count = sum(1 for memory in memories if "id" not in memory)
-+            oneshot_top_k = min(len(memories), non_id_count + search_topk)
-+            try:
-+                reranked = session_client.oneshot_search(
-+                    formatted_query,
-+                    memories,
-+                    system=RERANK_SYSTEM_PROMPT,
-+                    query_context=query_context,
-+                    top_k=oneshot_top_k,
-+                )
-+            except Exception as exc:
-+                print(f"attemory oneshot rerank failed; using session search order: {exc}", file=sys.stderr)
-+                break
-+
-+            reranked_ids = [
-+                result.id
-+                for result in reranked
-+                if isinstance(result.id, str) and result.id in index.memory_map
-+            ]
-+            if reranked_ids:
-+                seen = set(reranked_ids)
-+                ordered_ids = reranked_ids + [candidate_id for candidate_id in ordered_ids if candidate_id not in seen]
-+
-+            reranked_segments = {
-+                result.segment_id
-+                for result in reranked
-+                if getattr(result, "segment_id", None) is not None
-+            }
-+            if len(reranked_segments) <= 1:
-+                break
-+            current = reranked
-+
-+    # Convert chunk-level ranking to file-level ranking. Multiple chunks from
-+    # the same file add evidence with reciprocal-rank weights; this matches the
-+    # Semble metric, which is evaluated at file level.
-+    hits: list[dict[str, str]] = []
-+    for candidate_id in ordered_ids:
-+        location = index.memory_map.get(candidate_id)
-+        if location is None:
-+            continue
-+        hits.append(
-+            {
-+                "id": candidate_id,
-+                "relative_file": location.file,
-+                "file": f"{str(index.repo_root).rstrip('/')}/{location.file}".replace("//", "/"),
-+                "lines": location.lines,
-+            }
++    path = config_path(root)
++    if not path.exists():
++        write_config(root, expected)
++        return
++    current = load_config(root)
++    if current == expected:
++        return
++    if not allow_replace:
++        raise RuntimeError(
++            f"{root}: existing .attemory/config.toml differs from the benchmark "
++            "configuration; use --reindex to replace it explicitly"
 +        )
-+        if len(hits) >= search_topk:
-+            break
-+
-+    file_scores: dict[str, float] = {}
-+    first_rank: dict[str, int] = {}
-+    hit_counts: dict[str, int] = {}
-+    for rank, hit in enumerate(hits, start=1):
-+        file_path = hit["file"]
-+        hit_count = hit_counts.get(file_path, 0)
-+        if file_aggregation == "first" and hit_count > 0:
-+            continue
-+        if file_aggregation == "capped" and hit_count >= FILE_AGGREGATION_MAX_HITS:
-+            continue
-+
-+        weight = FILE_AGGREGATION_EXTRA_WEIGHT if file_aggregation == "capped" and hit_count > 0 else 1.0
-+        file_scores[file_path] = file_scores.get(file_path, 0.0) + weight / math.log2(rank + 1)
-+        hit_counts[file_path] = hit_count + 1
-+        first_rank.setdefault(file_path, rank)
-+
-+    return sorted(file_scores, key=lambda path: (-file_scores[path], first_rank[path], path))[:top_k]
++    write_config(root, expected)
 +
 +
-+def _clear_cache(client: Any, session_id: str) -> None:
-+    try:
-+        client.clear_cache(session_id=session_id)
-+    except Exception:
-+        pass
-+
-+
-+def _evaluate_repo(
-+    tasks: list[Task],
-+    *,
-+    index: IndexResult,
-+    client: Any,
-+    top_k: int,
-+    search_topk: int,
-+    latency_runs: int,
-+    file_aggregation: str,
-+    oneshot_rerank: bool,
-+    verbose: bool = False,
-+) -> tuple[float, float]:
-+    try:
-+        client.restore_session(session_id=index.session_id)
-+    except Exception as exc:
-+        raise RuntimeError(f"failed to restore attemory session {index.session_id!r}") from exc
-+
-+    ndcg10_sum = 0.0
-+    latencies: list[float] = []
-+    for task in tasks:
-+        query_latencies: list[float] = []
-+        file_paths: list[str] = []
-+        for _ in range(latency_runs):
-+            started = time.perf_counter()
-+            file_paths = _search_repo(
-+                task.query,
-+                index=index,
-+                client=client,
-+                search_topk=search_topk,
-+                top_k=top_k,
-+                file_aggregation=file_aggregation,
-+                oneshot_rerank=oneshot_rerank,
-+            )
-+            query_latencies.append((time.perf_counter() - started) * 1000)
-+            _clear_cache(client, index.session_id)
-+
-+        latencies.append(sorted(query_latencies)[len(query_latencies) // 2])
-+        relevant_ranks = [rank for target in task.all_relevant if (rank := file_rank(file_paths, target.path))]
-+        q_ndcg10 = ndcg_at_k(relevant_ranks, len(task.all_relevant), top_k)
-+        ndcg10_sum += q_ndcg10
-+
-+        if verbose:
-+            print(
-+                f"  ndcg@10={q_ndcg10:.3f}  ranks={relevant_ranks}  n_rel={len(task.all_relevant)}  q={task.query!r}",
-+                file=sys.stderr,
-+            )
-+            print(f"    targets: {', '.join(target.path for target in task.all_relevant)}", file=sys.stderr)
-+            print(f"    top-5:   {file_paths[:5]}", file=sys.stderr)
-+
-+    latencies.sort()
-+    return ndcg10_sum / len(tasks), latencies[len(latencies) // 2]
-+
-+
-+def _coerce_int(value: object) -> int:
-+    if not isinstance(value, int | str):
-+        raise TypeError(f"expected int-compatible value, got {type(value).__name__}")
-+    return int(value)
-+
-+
-+def _parse_target(raw: str | dict[str, object]) -> Target:
-+    if isinstance(raw, str):
-+        return Target(path=raw)
-+    if not isinstance(raw, dict):
-+        raise TypeError(f"expected mapping, got {type(raw).__name__}")
-+    start_line = raw.get("start_line")
-+    end_line = raw.get("end_line")
-+    return Target(
-+        path=str(raw["path"]),
-+        start_line=_coerce_int(start_line) if start_line is not None else None,
-+        end_line=_coerce_int(end_line) if end_line is not None else None,
++def run_attemory_code(root: Path, command: list[str]) -> subprocess.CompletedProcess[str]:
++    env = os.environ.copy()
++    python_root = str(ATTEMORY_ROOT / "python")
++    env["PYTHONPATH"] = (
++        python_root
++        if not env.get("PYTHONPATH")
++        else python_root + os.pathsep + env["PYTHONPATH"]
 +    )
-+
-+
-+def _load_filtered_tasks_with_annotations(
-+    repos: list[str] | None,
-+    languages: list[str] | None,
-+    annotations_dir: Path,
-+) -> tuple[dict[str, RepoSpec], list[Task]]:
-+    if annotations_dir == ANNOTATIONS_DIR:
-+        return load_filtered_tasks(repos, languages)
-+
-+    specs = {
-+        name: spec
-+        for name, spec in load_repo_specs().items()
-+        if spec.checkout_dir.exists() and (annotations_dir / f"{name}.json").exists()
-+    }
-+    tasks: list[Task] = []
-+    for annotation_file in sorted(annotations_dir.glob("*.json")):
-+        if annotation_file.stem not in specs:
-+            continue
-+        raw = json.loads(annotation_file.read_text(encoding="utf-8"))
-+        for item in raw:
-+            repo = item.get("repo", annotation_file.stem)
-+            if repo not in specs:
-+                continue
-+            spec = specs[repo]
-+            category = item.get("category")
-+            tasks.append(
-+                Task(
-+                    repo=repo,
-+                    language=spec.language,
-+                    query=item["query"],
-+                    relevant=tuple(_parse_target(target) for target in item.get("relevant", [])),
-+                    secondary=tuple(_parse_target(target) for target in item.get("secondary", [])),
-+                    category=category if isinstance(category, str) else infer_category(item["query"]),
-+                )
-+            )
-+
-+    filtered = apply_task_filters(tasks, repos=repos, languages=languages)
-+    if not filtered:
-+        raise SystemExit("No benchmark tasks matched the requested filters.")
-+    return specs, filtered
-+
-+
-+def _build_summary(results: list[RepoResult]) -> dict[str, object]:
-+    avg_ndcg10 = sum(result.ndcg10 for result in results) / len(results)
-+    avg_p50 = sum(result.p50_ms for result in results) / len(results)
-+    avg_index = sum(result.index_ms for result in results) / len(results)
-+    return {
-+        "tool": "attemory",
-+        "repos": [asdict(result) for result in results],
-+        "avg_ndcg10": round(avg_ndcg10, 4),
-+        "avg_p50_ms": round(avg_p50, 1),
-+        "avg_index_ms": round(avg_index, 0),
-+    }
-+
-+
-+def _load_completed(out_path: Path | None) -> dict[str, RepoResult]:
-+    if out_path is None or not out_path.exists():
-+        return {}
-+    try:
-+        data = json.loads(out_path.read_text(encoding="utf-8"))
-+        return {
-+            entry["repo"]: RepoResult(
-+                repo=entry["repo"],
-+                language=entry["language"],
-+                ndcg10=float(entry["ndcg10"]),
-+                p50_ms=float(entry["p50_ms"]),
-+                index_ms=float(entry.get("index_ms", 0.0)),
-+                memories=int(entry.get("memories", 0)),
-+            )
-+            for entry in data.get("repos", [])
-+        }
-+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-+        return {}
-+
-+
-+def _parse_args() -> argparse.Namespace:
-+    parser = argparse.ArgumentParser(description="Benchmark attemory on the semble benchmark suite.")
-+    add_filter_args(parser, verbose=True)
-+    parser.add_argument("--host", default=os.environ.get("ATTEMORY_HOST", "127.0.0.1"), help="attemory host.")
-+    parser.add_argument("--port", type=int, default=int(os.environ.get("ATTEMORY_PORT", "9006")), help="attemory port.")
-+    parser.add_argument(
-+        "--timeout",
-+        type=float,
-+        default=float(os.environ.get("ATTEMORY_TIMEOUT", "3600")),
-+        help="HTTP timeout in seconds.",
++    console_script = Path(sys.executable).with_name("atcode")
++    if console_script.is_file():
++        argv = [str(console_script), *command]
++        cwd = root
++    else:
++        # Import Attemory before changing into the indexed repository. Some
++        # source roots contain modules such as types.py that would otherwise
++        # shadow Python's standard library during interpreter startup.
++        runner = (
++            "import os,sys; "
++            "from attemory.code.cli import main; "
++            "os.chdir(sys.argv[1]); "
++            "raise SystemExit(main(sys.argv[2:]))"
++        )
++        argv = [sys.executable, "-c", runner, str(root), *command]
++        cwd = ATTEMORY_ROOT
++    completed = subprocess.run(
++        argv,
++        cwd=cwd,
++        env=env,
++        check=False,
++        text=True,
 +    )
-+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="Number of files used for NDCG@K.")
++    if completed.returncode != 0:
++        raise RuntimeError(
++            f"{root}: `attemory code {' '.join(command)}` failed "
++            f"with exit code {completed.returncode}"
++        )
++    return completed
++
++
++def load_manifest(path: Path) -> dict[str, Any]:
++    if not path.is_file():
++        return {"schema_version": 1, "repos": {}}
++    value = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(value, dict) or not isinstance(value.get("repos"), dict):
++        raise RuntimeError(f"invalid index manifest: {path}")
++    return value
++
++
++def index_metadata(root: Path) -> dict[str, Any]:
++    import_attemory()
++    from attemory.code.project import index_path, load_index
++
++    path = index_path(root)
++    if not path.is_file():
++        raise RuntimeError(f"attemory code did not write index metadata: {path}")
++    return load_index(root)
++
++
++def scan_config(root: Path, config: Any) -> tuple[int, int]:
++    import_attemory()
++    from attemory.code.project import scan_summary
++
++    summary = scan_summary(root, config)
++    return summary.files, summary.chunks
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(
++        description="Build Semble repository indexes through `attemory code index`."
++    )
++    parser.add_argument("--semble-root", type=Path, default=DEFAULT_SEMBLE_ROOT)
++    parser.add_argument("--repo", action="append", default=[])
++    parser.add_argument("--language", action="append", default=[])
++    parser.add_argument("--host", default=os.environ.get("ATTEMORY_HOST", "127.0.0.1"))
 +    parser.add_argument(
-+        "--search-topk",
++        "--port",
 +        type=int,
-+        default=DEFAULT_SEARCH_TOPK,
-+        help="Number of chunk hits kept before file-level fusion.",
-+    )
-+    parser.add_argument("--latency-runs", type=int, default=DEFAULT_LATENCY_RUNS)
-+    parser.add_argument("--index-root", type=Path, default=DEFAULT_INDEX_ROOT)
-+    parser.add_argument("--annotations-dir", type=Path, default=ANNOTATIONS_DIR)
-+    parser.add_argument(
-+        "--file-aggregation",
-+        choices=["sum", "capped", "first"],
-+        default=FILE_AGGREGATION_MODE,
-+        help="How multiple chunk hits from one file are fused into a file ranking.",
++        default=int(os.environ.get("ATTEMORY_PORT", "9006")),
 +    )
 +    parser.add_argument(
-+        "--no-oneshot-rerank",
-+        dest="oneshot_rerank",
-+        action="store_false",
-+        default=True,
-+        help="Disable one-shot reranking when search results come from multiple segments.",
++        "--profile",
++        choices=("compatible", "default"),
++        default="compatible",
++        help="compatible preserves the published run's source-file scope",
 +    )
-+    parser.add_argument(
-+        "--output",
-+        metavar="FILE",
-+        help="JSON file to write results to; existing per-repo entries are used for resume.",
-+    )
-+    index_group = parser.add_mutually_exclusive_group()
-+    index_group.add_argument(
-+        "--reuse-index",
-+        dest="reuse_index",
-+        action="store_true",
-+        default=True,
-+        help="Reuse existing sidecar files and restore the saved attemory session. This is the default.",
-+    )
-+    index_group.add_argument(
-+        "--rebuild-index",
-+        dest="reuse_index",
-+        action="store_false",
-+        help="Delete and rebuild each selected attemory session.",
-+    )
++    parser.add_argument("--manifest", type=Path, default=DEFAULT_INDEX_MANIFEST)
++    mode = parser.add_mutually_exclusive_group()
++    mode.add_argument("--dry-run", action="store_true")
++    mode.add_argument("--resume", action="store_true")
++    mode.add_argument("--reindex", action="store_true")
 +    return parser.parse_args()
 +
 +
-+def main() -> None:
-+    args = _parse_args()
-+    args.index_root = args.index_root.expanduser()
-+    args.annotations_dir = args.annotations_dir.expanduser()
++def main() -> int:
++    args = parse_args()
++    import_attemory()
++    from attemory import __version__ as attemory_version
 +
-+    is_full_run = not args.repo and not args.language
-+    out_path = Path(args.output).expanduser() if args.output else (results_path("attemory") if is_full_run else None)
-+    completed = _load_completed(out_path)
-+    repo_specs, tasks = _load_filtered_tasks_with_annotations(args.repo or None, args.language or None, args.annotations_dir)
-+    repo_tasks = grouped_tasks(tasks)
-+    client = AttemoryClient(host=args.host, port=args.port, timeout=args.timeout)
-+
-+    results: list[RepoResult] = list(completed.values())
-+    if completed:
-+        print(f"Resuming: {len(completed)} repo(s) already done, skipping.", file=sys.stderr)
-+
-+    print(f"{'Repo':<22} {'Language':<12} {'Memories':>8} {'Index':>9} {'NDCG@10':>8} {'p50':>8}", file=sys.stderr)
-+    print(f"{'-' * 22} {'-' * 12} {'-' * 8} {'-' * 9} {'-' * 8} {'-' * 8}", file=sys.stderr)
-+    for result in sorted(results, key=lambda item: item.repo):
-+        print(
-+            f"{result.repo:<22} {result.language:<12} {result.memories:>8} "
-+            f"{result.index_ms:>8.0f}ms {result.ndcg10:>8.3f} {result.p50_ms:>7.1f}ms (cached)",
-+            file=sys.stderr,
-+        )
-+
-+    for repo, repo_task_list in sorted(repo_tasks.items()):
-+        if repo in completed:
-+            continue
-+        spec = repo_specs[repo]
-+        if args.verbose:
-+            print(f"\n--- {repo} ---", file=sys.stderr)
-+        index = _build_or_restore_index(
-+            repo=repo,
-+            benchmark_dir=spec.benchmark_dir,
-+            index_root=args.index_root,
-+            client=client,
-+            reuse_index=args.reuse_index,
-+        )
-+        try:
-+            ndcg10, p50_ms = _evaluate_repo(
-+                repo_task_list,
-+                index=index,
-+                client=client,
-+                top_k=args.top_k,
-+                search_topk=args.search_topk,
-+                latency_runs=args.latency_runs,
-+                file_aggregation=args.file_aggregation,
-+                oneshot_rerank=args.oneshot_rerank,
-+                verbose=args.verbose,
-+            )
-+        except Exception:
-+            if not (args.reuse_index and index.reused):
-+                raise
-+            print(f"Reuse failed for {repo}; reindexing and retrying once.", file=sys.stderr)
-+            index = _fresh_index(
-+                repo=repo,
-+                benchmark_dir=spec.benchmark_dir,
-+                index_root=args.index_root,
-+                client=client,
-+            )
-+            ndcg10, p50_ms = _evaluate_repo(
-+                repo_task_list,
-+                index=index,
-+                client=client,
-+                top_k=args.top_k,
-+                search_topk=args.search_topk,
-+                latency_runs=args.latency_runs,
-+                file_aggregation=args.file_aggregation,
-+                oneshot_rerank=args.oneshot_rerank,
-+                verbose=args.verbose,
-+            )
-+
-+        result = RepoResult(
-+            repo=repo,
-+            language=spec.language,
-+            ndcg10=ndcg10,
-+            p50_ms=p50_ms,
-+            index_ms=index.index_ms,
-+            memories=index.memory_count,
-+        )
-+        results.append(result)
-+        print(
-+            f"{repo:<22} {spec.language:<12} {index.memory_count:>8} "
-+            f"{index.index_ms:>8.0f}ms {ndcg10:>8.3f} {p50_ms:>7.1f}ms",
-+            file=sys.stderr,
-+        )
-+        if out_path:
-+            out_path.parent.mkdir(parents=True, exist_ok=True)
-+            out_path.write_text(json.dumps(_build_summary(results), indent=2) + "\n", encoding="utf-8")
-+
-+    if not results:
-+        return
-+
-+    avg_ndcg10 = sum(result.ndcg10 for result in results) / len(results)
-+    avg_p50 = sum(result.p50_ms for result in results) / len(results)
-+    avg_index = sum(result.index_ms for result in results) / len(results)
-+    print(f"{'-' * 22} {'-' * 12} {'-' * 8} {'-' * 9} {'-' * 8} {'-' * 8}", file=sys.stderr)
-+    print(
-+        f"{'Average (' + str(len(results)) + ')':<22} {'':<12} {'':>8} "
-+        f"{avg_index:>8.0f}ms {avg_ndcg10:>8.3f} {avg_p50:>7.1f}ms",
-+        file=sys.stderr,
++    data = load_semble_data(args.semble_root)
++    specs, _ = selected_repos(
++        data,
++        repos=args.repo or None,
++        languages=args.language or None,
++    )
++    manifest = load_manifest(args.manifest.expanduser())
++    manifest.update(
++        {
++            "schema_version": 1,
++            "profile": args.profile,
++            "semble_root": str(args.semble_root.resolve()),
++            "host": args.host,
++            "port": args.port,
++            "attemory_version": attemory_version,
++            "attemory_git_commit": git_head(ATTEMORY_ROOT),
++            "attemory_git_dirty": git_dirty(ATTEMORY_ROOT),
++        }
 +    )
 +
-+    summary = _build_summary(results)
-+    print(json.dumps(summary, indent=2))
-+    if out_path:
-+        print(f"\nResults saved to {out_path}", file=sys.stderr)
++    total_files = 0
++    total_chunks = 0
++    for repo, spec in sorted(specs.items()):
++        verify_repo_revision(spec)
++        root = spec.benchmark_dir.resolve()
++        expected = build_config(
++            root,
++            repo=repo,
++            revision=spec.revision,
++            host=args.host,
++            port=args.port,
++            profile=args.profile,
++        )
++
++        if args.dry_run:
++            file_count, chunk_count = scan_config(root, expected)
++            total_files += file_count
++            total_chunks += chunk_count
++            print(
++                f"{repo}: files={file_count} chunks={chunk_count} "
++                f"memories={file_count + chunk_count}"
++            )
++            continue
++
++        ensure_config(root, expected, allow_replace=args.reindex)
++        command = ["reindex", "--force"] if args.reindex else ["index"]
++        if args.resume:
++            command.append("--resume")
++        had_index = (root / ".attemory" / "index.json").is_file()
++        started = time.perf_counter()
++        completed = run_attemory_code(root, command)
++        elapsed_ms = (time.perf_counter() - started) * 1000
++        metadata = index_metadata(root)
++        previous = manifest["repos"].get(repo, {})
++        index_ms = (
++            previous.get("index_ms", 0.0)
++            if had_index and not args.reindex
++            else elapsed_ms
++        )
++        entry = {
++            "repo": repo,
++            "language": spec.language,
++            "revision": spec.revision,
++            "benchmark_root": str(root),
++            "session_id": metadata["session_id"],
++            "profile": args.profile,
++            "chunk_lines": expected.chunk_lines,
++            "blank_line_window": expected.blank_line_window,
++            "file_boundary_reserve_percent": expected.file_boundary_reserve_percent,
++            "file_count": int(metadata["file_count"]),
++            "chunk_count": int(metadata["chunk_count"]),
++            "memory_count": int(metadata["memory_count"]),
++            "token_count": int(metadata["token_count"]),
++            "segment_count": int(metadata["segment_count"]),
++            "index_ms": float(index_ms),
++        }
++        manifest["repos"][repo] = entry
++        write_json_atomic(args.manifest.expanduser(), manifest)
++        total_files += entry["file_count"]
++        total_chunks += entry["chunk_count"]
++        print(
++            f"{repo}: files={entry['file_count']} chunks={entry['chunk_count']} "
++            f"segments={entry['segment_count']} index_ms={entry['index_ms']:.0f}"
++        )
++
++    if args.dry_run:
++        print(
++            f"scan repos={len(specs)} files={total_files} chunks={total_chunks} "
++            f"memories={total_files + total_chunks}"
++        )
++    else:
++        print(
++            f"indexed repos={len(specs)} files={total_files} chunks={total_chunks} "
++            f"manifest={args.manifest.expanduser()}"
++        )
++    return 0
 +
 +
 +if __name__ == "__main__":
-+    main()
++    raise SystemExit(main())
+diff --git a/benchmarks/test_attemory.py b/benchmarks/test_attemory.py
+new file mode 100644
+index 0000000..41b0c4e
+--- /dev/null
++++ b/benchmarks/test_attemory.py
+@@ -0,0 +1,161 @@
++from __future__ import annotations
++
++import json
++import math
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from benchmarks.baselines import attemory as semble_eval
++from benchmarks.baselines import attemory_common as semble_common
++from benchmarks.baselines import attemory_index as semble_index
++
++
++def test_compatible_patterns_preserve_source_scope() -> None:
++    patterns = semble_common.compatible_include_patterns()
++
++    assert "*.py" in patterns
++    assert "**/*.py" in patterns
++    assert "CMakeLists.txt" in patterns
++    assert "**/CMakeLists.txt" in patterns
++    assert "*.md" not in patterns
++
++
++def test_compatible_config_uses_repository_search_defaults(tmp_path: Path) -> None:
++    config = semble_index.build_config(
++        tmp_path,
++        repo="click",
++        revision="a" * 40,
++        host="127.0.0.1",
++        port=9006,
++        profile="compatible",
++    )
++
++    assert config.session_id == f"attemory-semble-atcode-click-{'a' * 12}"
++    assert config.kv_persist is True
++    assert config.chunk_lines == 30
++    assert config.blank_line_window == 10
++    assert config.file_boundary_reserve_percent == 25
++    assert config.candidate_chunk_top_k == 20
++    assert "*.py" in config.include_patterns
++    assert "*.md" not in config.include_patterns
++
++
++def test_multisegment_candidates_are_reranked_and_fused() -> None:
++    records = {
++        "a": SimpleNamespace(file="src/a.py"),
++        "b": SimpleNamespace(file="src/b.py"),
++        "c": SimpleNamespace(file="src/a.py"),
++    }
++    initial = [
++        SimpleNamespace(id="a", text="A", segment_id=0),
++        SimpleNamespace(id="b", text="B", segment_id=1),
++        SimpleNamespace(id="c", text="C", segment_id=1),
++    ]
++    reranked = [
++        SimpleNamespace(id="b", text="B", segment_id=0),
++        SimpleNamespace(id="c", text="C", segment_id=0),
++        SimpleNamespace(id="a", text="A", segment_id=0),
++    ]
++
++    class FakeClient:
++        def search(self, *_args, **_kwargs):
++            return initial
++
++        def oneshot_search(self, *_args, **_kwargs):
++            return reranked
++
++    index = semble_eval.IndexInfo(
++        root=Path("/repo"),
++        session_id="session",
++        file_count=2,
++        chunk_count=3,
++        token_count=100,
++        segment_count=2,
++        memory_map=records,
++    )
++
++    outcome = semble_eval.search_repo(
++        "where is b",
++        index=index,
++        client=FakeClient(),
++        search_top_k=3,
++        top_k=2,
++        aggregation="sum",
++        oneshot_rerank=True,
++    )
++
++    assert outcome.files == ["src/a.py", "src/b.py"]
++    assert outcome.raw_segment_count == 2
++    assert outcome.oneshot_passes == 1
++
++
++def test_result_resume_rejects_different_parameters(tmp_path: Path) -> None:
++    path = tmp_path / "results.json"
++    path.write_text(
++        json.dumps(
++            {
++                "run_config": {
++                    "top_k": 10,
++                    "search_top_k": 20,
++                    "latency_runs": 1,
++                    "file_aggregation": "sum",
++                    "oneshot_rerank": True,
++                },
++                "repos": [],
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    with pytest.raises(RuntimeError, match="different benchmark parameters"):
++        semble_eval.load_completed(
++            path,
++            run_config={
++                "top_k": 10,
++                "search_top_k": 50,
++                "latency_runs": 1,
++                "file_aggregation": "sum",
++                "oneshot_rerank": True,
++            },
++        )
++
++
++def test_ndcg_matches_binary_file_metric() -> None:
++    score = semble_common.ndcg_at_k([1, 3], n_relevant=2, k=10)
++    expected = (1.0 + 1.0 / math.log2(4)) / (
++        1.0 + 1.0 / math.log2(3)
++    )
++
++    assert score == pytest.approx(expected)
++
++
++def test_manifest_entry_must_match_loaded_index() -> None:
++    index = semble_eval.IndexInfo(
++        root=Path("/repo"),
++        session_id="session-a",
++        file_count=1,
++        chunk_count=2,
++        token_count=100,
++        segment_count=1,
++        memory_map={},
++    )
++    spec = SimpleNamespace(revision="a" * 40)
++    manifest = {
++        "repos": {
++            "click": {
++                "revision": "a" * 40,
++                "session_id": "session-b",
++                "chunk_count": 2,
++            }
++        }
++    }
++
++    with pytest.raises(RuntimeError, match="session mismatch"):
++        semble_eval.validate_manifest_entry(
++            repo="click",
++            spec=spec,
++            index=index,
++            manifest=manifest,
++        )

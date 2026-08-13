@@ -29,8 +29,16 @@ source .venv/bin/activate
 uv pip install -r requirements-lite.txt "httpx<0.28"
 ```
 
-Start an Attemory server with large tier separately, then run retrieval from LongMemEval's
-retrieval directory:
+Start an Attemory server separately with `--search-candidate-top-k 50`:
+
+```bash
+attemory-server \
+  --large \
+  --backend gpu \
+  --search-candidate-top-k 50
+```
+
+Then run retrieval from LongMemEval's retrieval directory:
 
 ```bash
 cd src/retrieval
@@ -64,6 +72,20 @@ ATTEMORY_PORT     default: 9006
 ATTEMORY_TIMEOUT  default: 3600
 ATTEMORY_WORKERS  default: 1
 ```
+
+## Benchmark Results
+
+The following results are from the cleaned LongMemEval-S split. Metrics exclude
+the 30 abstention questions and are averaged over the remaining 470 questions.
+The session-level metric is the main retrieval metric; the message/turn-level
+metrics are additional diagnostics over retrieved dialogue turns.
+
+| Qwen3.5 model | Attemory tier | Session recall_all@5 | Message/turn recall_all@5 | Message/turn recall_all@50 |
+| --- | --- | ---: | ---: | ---: |
+| 0.8B | `tiny` | 0.9000 | 0.6638 | 0.9468 |
+| 2B | `small` | 0.9489 | 0.7809 | 0.9830 |
+| 4B | `medium` | 0.9574 | 0.7660 | 0.9894 |
+| 9B | `large` | 0.9638 | 0.8170 | 0.9915 |
 
 ## 1. Supported Granularity
 
@@ -476,4 +498,3 @@ There are also some method differences from the official built-in retrievers.
 3. Official `session` mode ranks session corpus items directly. Attemory ranks
    turns first, then converts the turn ranking into a de-duplicated session
    ranking by taking the first occurrence of each parent session.
-
