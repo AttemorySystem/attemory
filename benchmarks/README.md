@@ -25,7 +25,7 @@ keyword/vector retrieval stacks.
 
 | Benchmark | Task | Context scale | Main result |
 |---|---|---:|---:|
-| LongMemEval-S-cleaned | Retrieval-only long-term memory | about 40 sessions / 115k tokens | **98.72% session R_any@5**, **92.77% session R_all@5**, **98.94% message R_all@50** |
+| LongMemEval-S-cleaned | Retrieval-only long-term memory | about 40 sessions / 115k tokens | **99.79% session R_any@5**, **96.38% session R_all@5**, **99.15% message R_all@50** |
 | LongMemEval-M-cleaned | Retrieval-only long-term memory | about 500 sessions / 1.5M tokens / 4.9k messages | **94.89% session R_any@5**, **83.62% session R_all@5**, **92.55% message R_all@50** |
 | LoCoMo | End-to-end memory QA | 10 long conversations / 1,540 QA items | **94.52% accuracy** |
 | Semble | Code retrieval | 63 repos / 19 languages / largest repo about 5M tokens | **0.9055 file-level NDCG@10** |
@@ -169,7 +169,7 @@ We start the Attemory server with large tier for LongMemEval.
 
 | Dataset | Session R_any@5 | Session R_all@5 | Session NDCG@5 | Message R_all@30 | Message R_all@50 |
 |---|---:|---:|---:|---:|---:|
-| **LongMemEval-S-cleaned** | **98.72** | **92.77** | **93.90** | **96.81** | **98.94** |
+| **LongMemEval-S-cleaned** | **99.79** | **96.38** | **97.68** | **98.51** | **99.15** |
 | **LongMemEval-M-cleaned** | **94.89** | **83.62** | **87.76** | **90.21** | **92.55** |
 
 S is close to the retrieval ceiling. M is the scale test: Attemory still finds

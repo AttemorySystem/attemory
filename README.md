@@ -14,6 +14,11 @@ letting a local model attend over that memory. This is a different retrieval
 primitive from nearest-vector lookup: Attemory does not rely on embedding
 similarity, BM25, or a vector database as the core retriever.
 
+> **v0.1.3 update:** On LongMemEval-S, session Recall_all@5 improved from
+> **92.77% to 96.38%** (+3.61 percentage points), while average retrieval time
+> per query fell from about **26.2s to 21.0s** (-19.8%) compared with the
+> previous release.
+
 ## Why Attemory
 
 - **Search with reasoning:** search runs through model attention over
@@ -117,7 +122,7 @@ benchmarks.
 
 | Benchmark | What it tests | Context size | Attemory result |
 | --- | --- | ---: | --- |
-| [LongMemEval-S](benchmarks/LongMemEval.md) | memory retrieval, the split most memory systems evaluate | about 40 sessions / 115k tokens | **98.72% session Recall_any@5**, **92.77% session Recall_all@5**, **98.94% message Recall_all@50** |
+| [LongMemEval-S](benchmarks/LongMemEval.md) | memory retrieval, the split most memory systems evaluate | about 40 sessions / 115k tokens | **99.79% session Recall_any@5**, **96.38% session Recall_all@5**, **99.15% message Recall_all@50** |
 | [LongMemEval-M](benchmarks/LongMemEval.md) | Million-token memory retrieval, a scale few memory systems attempt | about 500 sessions / 1.5M tokens / 5k messages | **94.89% session Recall_any@5**, **83.62% session Recall_all@5**, **92.55% message Recall_all@50** |
 | [LoCoMo](benchmarks/LoCoMo.md) | End-to-end long-conversation QA | 10 long conversations / 1,540 QA items | **94.52% accuracy** with GPT-4.1-mini as answer model and GPT-4o-mini as judge |
 | [Semble](benchmarks/semble.md) | Code retrieval | 63 repos / 19 languages | **0.9055 file-level NDCG@10** |
